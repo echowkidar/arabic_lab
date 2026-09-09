@@ -1,0 +1,77 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id              String          @id @default(uuid())
+  name            String
+  username        String          @unique
+  passwordHash    String
+  role            String          // "ADMIN" | "PROFESSOR" | "STUDENT"
+  cabinNumber     Int?            @unique
+  isActive        Boolean         @default(true)
+  consentGivenAt  DateTime?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  sessions        Session[]
+  recordings      Recording[]     @relation("RecordedBy")
+  studentRecords  Recording[]     @relation("StudentRecord")
+  monitoringLogsAsProf    MonitoringLog[] @relation("ProfLogs")
+  monitoringLogsAsStudent MonitoringLog[] @relation("StudentLogs")
+}
+
+model Session {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  loginAt     DateTime  @default(now())
+  logoutAt    DateTime?
+  deviceInfo  String?
+  ipAddress   String?
+}
+
+model Call {
+  id            String    @id @default(uuid())
+  roomId        String    @unique
+  type          String    // "ONE_TO_ONE_VIDEO" | "ONE_TO_ONE_AUDIO" | "GROUP_VIDEO" | "GROUP_AUDIO"
+  initiatedBy   String
+  participants  String    // JSON array of user IDs
+  startedAt     DateTime  @default(now())
+  endedAt       DateTime?
+  durationSec   Int?
+
+  recordings    Recording[]
+}
+
+model Recording {
+  id            String    @id @default(uuid())
+  title         String
+  relatedCallId String?
+  call          Call?     @relation(fields: [relatedCallId], references: [id])
+  studentId     String?
+  student       User?     @relation("StudentRecord", fields: [studentId], references: [id])
+  recordedBy    String
+  professor     User      @relation("RecordedBy", fields: [recordedBy], references: [id])
+  filePath      String
+  durationSec   Int       @default(0)
+  sizeBytes     Int       @default(0)
+  mimeType      String    @default("video/webm")
+  createdAt     DateTime  @default(now())
+}
+
+model MonitoringLog {
+  id            String    @id @default(uuid())
+  professorId   String
+  professor     User      @relation("ProfLogs", fields: [professorId], references: [id])
+  studentId     String
+  student       User      @relation("StudentLogs", fields: [studentId], references: [id])
+  action        String    // "SCREEN_VIEW" | "AUDIO_LISTEN" | "WEBCAM_VIEW"
+  startedAt     DateTime  @default(now())
+  endedAt       DateTime?
+}

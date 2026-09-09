@@ -1,0 +1,29 @@
+port: 7880
+bind_addresses:
+  - ""
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50050
+  use_external_ip: false
+  enable_loopback_candidate: true
+
+keys:
+  API_KEY_ARABIC_LAB: SecretArabicLabLiveKitKey2026
+
+logging:
+  level: info
+
+room:
+  auto_create: true
+  empty_timeout: 300
+  max_participants: 100
+
+audio:
+  # Low-latency voice tuning for Arabic pronunciation
+  max_bitrate: 48000
+
+video:
+  # Tuned for high-definition screen sharing with low CPU load
+  dynacast: true

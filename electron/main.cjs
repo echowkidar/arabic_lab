@@ -1,0 +1,59 @@
+const { app, BrowserWindow, ipcMain, desktopCapturer } = require('electron');
+const path = require('path');
+
+let mainWindow = null;
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1024,
+    minHeight: 720,
+    title: 'مختبر اللغة العربية — Arabic Language Lab Suite',
+    backgroundColor: '#06110d',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+    autoHideMenuBar: true,
+  });
+
+  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+  const startUrl = isDev ? 'http://localhost:5173' : `file://${path.join(__dirname, '../client/dist/index.html')}`;
+
+  mainWindow.loadURL(startUrl);
+
+  // Silent screen capture handler for Arabic Lab
+  ipcMain.handle('DESKTOP_CAPTURER_GET_SOURCES', async (_event, opts) => {
+    try {
+      const sources = await desktopCapturer.getSources(opts || { types: ['screen', 'window'] });
+      return sources.map((s) => ({
+        id: s.id,
+        name: s.name,
+        thumbnail: s.thumbnail ? s.thumbnail.toDataURL() : null,
+      }));
+    } catch (e) {
+      console.error('Failed to get desktop sources:', e);
+      return [];
+    }
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+app.whenReady().then(createWindow);
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) {
+    createWindow();
+  }
+});

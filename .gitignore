@@ -1,0 +1,44 @@
+# Node dependencies
+node_modules/
+*/node_modules/
+package-lock.json.backup
+
+# Production builds
+dist/
+*/dist/
+build/
+*/build/
+
+# Environment variables
+.env
+*/.env
+*.local
+
+# Database & SQLite files
+*.db
+*.db-journal
+dev.db
+dev.db-journal
+server/prisma/*.db
+server/prisma/*.db-journal
+
+# Media / recordings upload folder
+uploads/
+*/uploads/
+recordings/
+*/recordings/
+
+# Logs & cache
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.cache/
+*/.cache/
+.eslintcache
+
+# Editor & OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
