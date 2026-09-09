@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Cabin, Language } from '../types';
 import { Eye, Video, Mic, Volume2, Hand, Monitor, Camera } from 'lucide-react';
-import { renderMockWorkstation } from '../services/screenSimulators';
+import { renderMockWorkstation, renderOfflineWorkstation } from '../services/screenSimulators';
 
 interface CabinCardProps {
   cabin: Cabin;
@@ -15,7 +15,7 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
   const animFrameRef = useRef<number | null>(null);
   const isArabic = language === 'ar';
 
-  const isSpeaking = cabin.audioLevel > 20;
+  const isSpeaking = cabin.online && cabin.audioLevel > 20;
 
   // Render animated preview canvas
   useEffect(() => {
@@ -31,15 +31,26 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
       if (!active) return;
       const elapsed = (Date.now() - startTime) / 1000;
 
-      renderMockWorkstation(
-        ctx,
-        canvas.width,
-        canvas.height,
-        cabin.cabinNumber,
-        cabin.student?.name || `Student ${cabin.cabinNumber}`,
-        elapsed,
-        isSpeaking
-      );
+      if (cabin.online) {
+        renderMockWorkstation(
+          ctx,
+          canvas.width,
+          canvas.height,
+          cabin.cabinNumber,
+          cabin.student?.name || `Student ${cabin.cabinNumber}`,
+          elapsed,
+          isSpeaking
+        );
+      } else {
+        renderOfflineWorkstation(
+          ctx,
+          canvas.width,
+          canvas.height,
+          cabin.cabinNumber,
+          cabin.student?.name || `Student ${cabin.cabinNumber}`,
+          isArabic
+        );
+      }
 
       animFrameRef.current = requestAnimationFrame(render);
     };
@@ -50,7 +61,7 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
       active = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [cabin.cabinNumber, cabin.student?.name, isSpeaking]);
+  }, [cabin.cabinNumber, cabin.student?.name, isSpeaking, cabin.online, isArabic]);
 
   const cabinPad = String(cabin.cabinNumber).padStart(2, '0');
 
@@ -155,7 +166,7 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
             <span>{isArabic ? 'مستوى الصوت' : 'Audio Level'}</span>
           </div>
           <span className={`font-mono text-[9px] font-bold ${isSpeaking ? 'text-emerald-300' : 'text-slate-500'}`}>
-            {cabin.audioLevel}%
+            {cabin.online ? `${cabin.audioLevel}%` : '0%'}
           </span>
         </div>
 
@@ -163,7 +174,7 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
         <div className="grid grid-cols-10 gap-1 h-1.5">
           {Array.from({ length: 10 }).map((_, idx) => {
             const threshold = (idx + 1) * 10;
-            const active = cabin.audioLevel >= threshold;
+            const active = cabin.online && cabin.audioLevel >= threshold;
             let color = 'bg-emerald-500';
             if (idx >= 7) color = 'bg-yellow-400';
             if (idx >= 9) color = 'bg-red-500';

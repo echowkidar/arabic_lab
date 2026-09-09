@@ -32,7 +32,7 @@ export function App() {
   // Filters
   const [filterType, setFilterType] = useState<'ALL' | 'ONLINE' | 'SPEAKING' | 'HANDS' | 'INCALL'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [simulationActive, setSimulationActive] = useState(true);
+  const [simulationActive, setSimulationActive] = useState(false);
 
   // Restore session
   useEffect(() => {
@@ -130,7 +130,13 @@ export function App() {
 
   // Simulated 25-Cabin Activity Loop (for realistic demo)
   useEffect(() => {
-    if (!simulationActive || !user || user.role === 'STUDENT') return;
+    if (!simulationActive) {
+      if (user && user.role !== 'STUDENT') {
+        loadLabData();
+      }
+      return;
+    }
+    if (!user || user.role === 'STUDENT') return;
 
     const interval = setInterval(() => {
       setCabins((prev) =>
@@ -151,6 +157,16 @@ export function App() {
 
     return () => clearInterval(interval);
   }, [simulationActive, user]);
+
+  const handleToggleSimulation = () => {
+    setSimulationActive((prev) => {
+      const next = !prev;
+      if (!next) {
+        loadLabData();
+      }
+      return next;
+    });
+  };
 
   const handleLoginSuccess = (loggedInUser: User, loggedInToken: string) => {
     setUser(loggedInUser);
@@ -268,7 +284,7 @@ export function App() {
         onOpenAdmin={user.role !== 'STUDENT' ? () => setAdminOpen(true) : undefined}
         recordingsCount={recordings.length}
         simulationActive={simulationActive}
-        onToggleSimulation={() => setSimulationActive(!simulationActive)}
+        onToggleSimulation={handleToggleSimulation}
         language={language}
         onSelectLanguage={(lang) => setLanguage(lang)}
       />

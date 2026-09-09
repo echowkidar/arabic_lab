@@ -4,7 +4,7 @@ import {
   X, Eye, Camera, CameraOff, Volume2, VolumeX, Disc,
   CheckCircle, ChevronLeft, ChevronRight, Video, ShieldAlert, Download
 } from 'lucide-react';
-import { renderMockWorkstation } from '../services/screenSimulators';
+import { renderMockWorkstation, renderOfflineWorkstation } from '../services/screenSimulators';
 import { uploadRecording, logAudit } from '../services/api';
 import { socket } from '../services/socket';
 
@@ -70,15 +70,26 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
     const render = () => {
       if (!active) return;
       const elapsed = (Date.now() - startTime) / 1000;
-      renderMockWorkstation(
-        ctx,
-        canvas.width,
-        canvas.height,
-        cabin.cabinNumber,
-        cabin.student?.name || `Student ${cabin.cabinNumber}`,
-        elapsed,
-        cabin.audioLevel > 15
-      );
+      if (cabin.online) {
+        renderMockWorkstation(
+          ctx,
+          canvas.width,
+          canvas.height,
+          cabin.cabinNumber,
+          cabin.student?.name || `Student ${cabin.cabinNumber}`,
+          elapsed,
+          cabin.audioLevel > 15
+        );
+      } else {
+        renderOfflineWorkstation(
+          ctx,
+          canvas.width,
+          canvas.height,
+          cabin.cabinNumber,
+          cabin.student?.name || `Student ${cabin.cabinNumber}`,
+          isArabic
+        );
+      }
       animId = requestAnimationFrame(render);
     };
 
@@ -88,7 +99,7 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
       active = false;
       cancelAnimationFrame(animId);
     };
-  }, [cabin.cabinNumber, cabin.student?.name, cabin.audioLevel]);
+  }, [cabin.cabinNumber, cabin.student?.name, cabin.audioLevel, cabin.online, isArabic]);
 
   // Toggle Webcam
   const handleToggleWebcam = () => {

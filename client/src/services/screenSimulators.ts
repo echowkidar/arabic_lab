@@ -110,3 +110,71 @@ export function renderMockWorkstation(
   ctx.textAlign = 'center';
   ctx.fillText(isSpeaking ? '● SPEAKING' : '✓ LISTENING', width - 62, height - 18);
 }
+
+export function renderOfflineWorkstation(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  cabinNumber: number,
+  studentName: string,
+  isArabic: boolean
+) {
+  // Dark idle background
+  ctx.fillStyle = '#060a0e';
+  ctx.fillRect(0, 0, width, height);
+
+  // Subtle grid
+  ctx.strokeStyle = 'rgba(16, 185, 129, 0.04)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x < width; x += 24) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+  }
+  for (let y = 0; y < height; y += 24) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
+
+  // Standby Icon in Center
+  const centerX = width / 2;
+  const centerY = height / 2;
+
+  ctx.fillStyle = '#0d181c';
+  ctx.strokeStyle = 'rgba(71, 85, 105, 0.4)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(centerX, centerY - 14, 18, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.font = '14px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('⚡', centerX, centerY - 9);
+
+  // Cabin Badge & Standby Title
+  ctx.font = 'bold 11px Inter, sans-serif';
+  ctx.fillStyle = '#94a3b8';
+  ctx.fillText(
+    isArabic
+      ? `مقصورة ${String(cabinNumber).padStart(2, '0')} — في وضع الاستعداد`
+      : `CABIN ${String(cabinNumber).padStart(2, '0')} — STANDBY`,
+    centerX,
+    centerY + 16
+  );
+
+  // Waiting Subtitle
+  ctx.font = '10px Inter, sans-serif';
+  ctx.fillStyle = '#475569';
+  ctx.fillText(
+    isArabic ? 'في انتظار تسجيل دخول الطالب' : 'Waiting for student to login...',
+    centerX,
+    centerY + 32
+  );
+
+  ctx.textAlign = 'left';
+}
+
