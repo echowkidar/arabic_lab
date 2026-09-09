@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Recording, Language } from '../types';
 import { X, Film, Play, Trash2, Download, Clock, HardDrive, User, Calendar } from 'lucide-react';
-import { deleteRecording } from '../services/api';
+import { deleteRecording, SERVER_URL } from '../services/api';
 
 interface RecordingsModalProps {
   recordings: Recording[];
@@ -80,7 +80,7 @@ export const RecordingsModal: React.FC<RecordingsModalProps> = ({
               <div className="flex flex-col gap-3">
                 <div className="aspect-video bg-slate-950 rounded-xl overflow-hidden border border-emerald-900/60 relative flex items-center justify-center">
                   <video
-                    src={`http://localhost:5000${selectedRecording.filePath}`}
+                    src={`${SERVER_URL}${selectedRecording.filePath}`}
                     controls
                     autoPlay
                     className="w-full h-full object-contain"
@@ -110,7 +110,7 @@ export const RecordingsModal: React.FC<RecordingsModalProps> = ({
 
                   <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-emerald-900/40">
                     <a
-                      href={`http://localhost:5000${selectedRecording.filePath}`}
+                      href={`${SERVER_URL}${selectedRecording.filePath}`}
                       download
                       className="btn-outline text-xs py-1.5 px-3"
                     >

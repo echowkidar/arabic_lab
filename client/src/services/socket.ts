@@ -1,6 +1,7 @@
 import { io, Socket } from 'socket.io-client';
+import { SERVER_URL } from './api';
 
-const SOCKET_URL = 'http://localhost:5000';
+const SOCKET_URL = SERVER_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5000');
 
 export const socket: Socket = io(SOCKET_URL, {
   autoConnect: false,

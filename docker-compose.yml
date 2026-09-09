@@ -1,0 +1,43 @@
+services:
+  # 1. Backend API & WebRTC Signaling Engine
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: arabic_lab_server
+    restart: always
+    environment:
+      - PORT=5000
+      - DATABASE_URL=file:/app/prisma/dev.db
+      - RECORDINGS_DIR=/app/uploads/recordings
+      - JWT_SECRET=arabic_lab_super_secret_jwt_key_2026
+      - CLIENT_ORIGIN=*
+    volumes:
+      - lab_db_data:/app/prisma
+      - lab_recordings_data:/app/uploads/recordings
+    networks:
+      - arabic_lab_net
+
+  # 2. Frontend React / Vite UI + Reverse Proxy Nginx
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: arabic_lab_client
+    restart: always
+    depends_on:
+      - server
+    ports:
+      # Port 8080 on Host -> Port 80 inside container
+      # (Host ka existing Nginx agar port 80/443 use kar raha hai to conflict nahi hoga)
+      - "${APP_PORT:-8080}:80"
+    networks:
+      - arabic_lab_net
+
+networks:
+  arabic_lab_net:
+    driver: bridge
+
+volumes:
+  lab_db_data:
+  lab_recordings_data:
