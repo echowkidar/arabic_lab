@@ -49,6 +49,7 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
   // Video refs
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
+  const frameCaptureIntervalRef = useRef<number | null>(null);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
 
@@ -66,6 +67,10 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
 
   // Physical Screen Share
   const stopScreenShare = () => {
+    if (frameCaptureIntervalRef.current) {
+      clearInterval(frameCaptureIntervalRef.current);
+      frameCaptureIntervalRef.current = null;
+    }
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach((track) => track.stop());
       screenStreamRef.current = null;
@@ -79,41 +84,116 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
   const startScreenShare = async () => {
     setScreenError(null);
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-        if (typeof window !== 'undefined' && !window.isSecureContext) {
-          throw new Error(
-            `Chrome restricts physical screen capture over plain HTTP on LAN IP (${window.location.hostname}). To enable screen capture over LAN, open "chrome://flags/#unsafely-treat-insecure-origin-as-secure" in Chrome, add "http://${window.location.host}", enable it and relaunch Chrome. Or access via "http://localhost:5173" on the host machine.`
-          );
-        } else {
-          throw new Error('Screen sharing is not supported by your browser.');
+      let stream: MediaStream | null = null;
+
+      // 1. Native Electron Screen Capture
+      const electronAPI = (window as any).electronAPI;
+      if (electronAPI && electronAPI.getDesktopSources) {
+        try {
+          const sources = await electronAPI.getDesktopSources({
+            types: ['screen'],
+            thumbnailSize: { width: 1920, height: 1080 },
+          });
+
+          if (sources && sources.length > 0) {
+            // Priority A: Try getUserMedia with chromeMediaSourceId
+            if (navigator.mediaDevices && (navigator.mediaDevices as any).getUserMedia) {
+              try {
+                stream = await (navigator.mediaDevices as any).getUserMedia({
+                  audio: false,
+                  video: {
+                    mandatory: {
+                      chromeMediaSource: 'desktop',
+                      chromeMediaSourceId: sources[0].id,
+                      minWidth: 1280,
+                      maxWidth: 1920,
+                      minHeight: 720,
+                      maxHeight: 1080,
+                    },
+                  },
+                });
+              } catch (gumErr) {
+                console.warn('Native getUserMedia chromeMediaSource failed, trying Canvas streamer:', gumErr);
+              }
+            }
+
+            // Priority B: Live Physical Canvas Streamer (bypasses all browser security restrictions)
+            if (!stream) {
+              const canvas = document.createElement('canvas');
+              canvas.width = 1920;
+              canvas.height = 1080;
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                stream = canvas.captureStream(25);
+
+                const renderFrame = async () => {
+                  try {
+                    const freshSources = await electronAPI.getDesktopSources({
+                      types: ['screen'],
+                      thumbnailSize: { width: 1920, height: 1080 },
+                    });
+                    if (freshSources && freshSources.length > 0 && freshSources[0].thumbnail) {
+                      const img = new Image();
+                      img.onload = () => {
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                      };
+                      img.src = freshSources[0].thumbnail;
+                    }
+                  } catch (e) {
+                    // silent
+                  }
+                };
+
+                // Immediate first frame
+                renderFrame();
+                // 100ms interval = smooth live physical desktop mirror
+                frameCaptureIntervalRef.current = window.setInterval(renderFrame, 100);
+              }
+            }
+          }
+        } catch (elErr) {
+          console.warn('Electron desktop sources retrieval failed:', elErr);
         }
       }
 
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          displaySurface: 'monitor',
-        },
-        audio: shareMic,
-      });
+      // 2. Standard Web Browser getDisplayMedia fallback
+      if (!stream) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+          if (typeof window !== 'undefined' && !window.isSecureContext) {
+            throw new Error(
+              `Physical screen capture over plain HTTP LAN (${window.location.hostname}) requires either the Native Desktop App (ArabicLab.exe) or enabling "chrome://flags/#unsafely-treat-insecure-origin-as-secure" in Chrome.`
+            );
+          } else {
+            throw new Error('Screen sharing is not supported by your current browser.');
+          }
+        }
 
-      screenStreamRef.current = stream;
-      setIsScreenSharing(true);
-
-      if (screenVideoRef.current) {
-        screenVideoRef.current.srcObject = stream;
-        screenVideoRef.current.play().catch(console.warn);
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            displaySurface: 'monitor',
+          },
+          audio: shareMic,
+        });
       }
 
-      // Handle when user stops sharing via browser's native floating bar
-      const videoTrack = stream.getVideoTracks()[0];
-      if (videoTrack) {
-        videoTrack.onended = () => {
-          stopScreenShare();
-        };
+      if (stream) {
+        screenStreamRef.current = stream;
+        setIsScreenSharing(true);
+
+        if (screenVideoRef.current) {
+          screenVideoRef.current.srcObject = stream;
+          screenVideoRef.current.play().catch(console.warn);
+        }
+
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          videoTrack.onended = () => {
+            stopScreenShare();
+          };
+        }
       }
     } catch (err: any) {
       if (err.name === 'NotAllowedError') {
-        // User dismissed the screen picker
         console.log('Screen capture dismissed by user');
       } else {
         console.error('Screen sharing error:', err);
@@ -167,6 +247,9 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
   // Clean up streams on unmount
   useEffect(() => {
     return () => {
+      if (frameCaptureIntervalRef.current) {
+        clearInterval(frameCaptureIntervalRef.current);
+      }
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((t) => t.stop());
       }
