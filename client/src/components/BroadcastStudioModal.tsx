@@ -45,6 +45,7 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
 
   const [screenError, setScreenError] = useState<string | null>(null);
   const [hasWebcam, setHasWebcam] = useState(false);
+  const [screenImageSrc, setScreenImageSrc] = useState<string | null>(null);
 
   // Video refs
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -78,6 +79,7 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
     if (screenVideoRef.current) {
       screenVideoRef.current.srcObject = null;
     }
+    setScreenImageSrc(null);
     setIsScreenSharing(false);
   };
 
@@ -133,6 +135,7 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
                       thumbnailSize: { width: 1920, height: 1080 },
                     });
                     if (freshSources && freshSources.length > 0 && freshSources[0].thumbnail) {
+                      setScreenImageSrc(freshSources[0].thumbnail);
                       const img = new Image();
                       img.onload = () => {
                         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
@@ -201,6 +204,14 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
       }
     }
   };
+
+  // Ensure video element receives stream when isScreenSharing becomes true
+  useEffect(() => {
+    if (isScreenSharing && screenVideoRef.current && screenStreamRef.current) {
+      screenVideoRef.current.srcObject = screenStreamRef.current;
+      screenVideoRef.current.play().catch(console.warn);
+    }
+  }, [isScreenSharing]);
 
   const handleToggleScreenShare = () => {
     if (isScreenSharing) {
@@ -553,13 +564,21 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
           {/* Active Screen Video Stream */}
           {isScreenSharing ? (
             <div className="relative w-full h-full flex items-center justify-center bg-slate-950">
-              <video
-                ref={screenVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className="w-full h-full max-h-[65vh] object-contain shadow-2xl"
-              />
+              {screenImageSrc ? (
+                <img
+                  src={screenImageSrc}
+                  alt="Live Desktop Screen"
+                  className="w-full h-full max-h-[65vh] object-contain shadow-2xl pointer-events-none select-none"
+                />
+              ) : (
+                <video
+                  ref={screenVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full max-h-[65vh] object-contain shadow-2xl"
+                />
+              )}
               {/* Screen Stream Status Badge */}
               <div className="absolute top-4 left-4 flex items-center gap-2 bg-emerald-950/90 backdrop-blur-md px-3 py-1.5 rounded-lg border border-emerald-500/40 text-xs text-emerald-300 font-mono shadow-lg">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
