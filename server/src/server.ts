@@ -94,6 +94,23 @@ app.get('/api/download/electron-installer', (_req, res) => {
   res.status(404).json({ error: 'Installer file is not available on server.' });
 });
 
+// --- DESKTOP APP AUTO-UPDATE MANIFEST ---
+app.get('/api/app/version', (_req, res) => {
+  res.json({
+    version: '1.1.0',
+    downloadUrl: '/api/download/setup',
+    releaseDate: '2026-09-10',
+    name: 'Arabic Language Lab Suite',
+    mandatory: false,
+    features: [
+      'Native 1080p HD Screen Surveillance',
+      '25 FPS Real-Time Single View',
+      'Silent Tray Persistence on Close',
+      'Fullscreen Edge-to-Edge Monitor'
+    ]
+  });
+});
+
 // --- ELECTRON DESKTOP APPLICATION DOWNLOAD (.zip with ArabicLab.exe) ---
 app.get('/api/download/electron-desktop', (req, res) => {
   // Delegate directly to the main installer endpoint

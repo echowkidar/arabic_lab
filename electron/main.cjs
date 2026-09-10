@@ -1,5 +1,11 @@
 const { app, BrowserWindow, ipcMain, desktopCapturer, session, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
+const https = require('https');
+const http = require('http');
+const fs = require('fs');
+const { spawn } = require('child_process');
+
+const APP_VERSION = '1.1.0';
 
 let mainWindow = null;
 let tray = null;
@@ -56,6 +62,14 @@ function createWindow() {
     });
   });
 
+  // Silent Background Auto-Update Check
+  setTimeout(() => {
+    checkForAppUpdates(defaultServerUrl);
+  }, 4000);
+  setInterval(() => {
+    checkForAppUpdates(defaultServerUrl);
+  }, 30 * 60 * 1000);
+
   // Auto-register in Windows Startup on Boot (Restarts)
   if (app.isPackaged || process.env.ENABLE_AUTO_START === 'true') {
     app.setLoginItemSettings({
@@ -65,7 +79,7 @@ function createWindow() {
     });
   }
 
-  // Silent screen capture handler for Arabic Lab
+  // Silent screen capture handler for Arabic Lab (Always 1080p Native HD)
   ipcMain.handle('DESKTOP_CAPTURER_GET_SOURCES', async (_event, opts) => {
     try {
       const defaultOpts = {
@@ -74,6 +88,10 @@ function createWindow() {
         fetchWindowIcons: false,
       };
       const finalOpts = { ...defaultOpts, ...(opts || {}) };
+      // Guarantee at least 1920x1080 resolution
+      if (!finalOpts.thumbnailSize || finalOpts.thumbnailSize.width < 1920) {
+        finalOpts.thumbnailSize = { width: 1920, height: 1080 };
+      }
       const sources = await desktopCapturer.getSources(finalOpts);
       return sources.map((s) => ({
         id: s.id,
@@ -145,6 +163,78 @@ function createTray() {
     });
   } catch (e) {
     console.warn('Tray init notice:', e);
+  }
+}
+
+// Silent Background Auto-Updater Engine
+function checkForAppUpdates(serverBaseUrl) {
+  try {
+    if (!serverBaseUrl) return;
+    const versionUrl = `${serverBaseUrl}/api/app/version`;
+    const client = versionUrl.startsWith('https') ? https : http;
+
+    client.get(versionUrl, { timeout: 10000 }, (res) => {
+      if (res.statusCode !== 200) return;
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const info = JSON.parse(data);
+          if (info.version && info.version !== APP_VERSION) {
+            console.log(`🚀 New ArabicLab version detected on server: ${info.version} (current: ${APP_VERSION})`);
+            downloadAndApplyUpdate(serverBaseUrl, info.downloadUrl || '/api/download/setup');
+          }
+        } catch (e) {
+          // ignore parse error
+        }
+      });
+    }).on('error', () => {
+      // offline or unreachable, silent skip
+    });
+  } catch (e) {
+    // silent skip
+  }
+}
+
+function downloadAndApplyUpdate(serverBaseUrl, downloadPath) {
+  try {
+    const fullUrl = downloadPath.startsWith('http') ? downloadPath : `${serverBaseUrl}${downloadPath}`;
+    const tempExe = path.join(app.getPath('temp'), `ArabicLab-Setup-Update-${Date.now()}.exe`);
+    const file = fs.createWriteStream(tempExe);
+    const client = fullUrl.startsWith('https') ? https : http;
+
+    client.get(fullUrl, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        if (res.headers.location) {
+          downloadAndApplyUpdate('', res.headers.location);
+        }
+        return;
+      }
+      if (res.statusCode !== 200) {
+        file.close();
+        fs.unlink(tempExe, () => {});
+        return;
+      }
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close(() => {
+          console.log('✅ ArabicLab update downloaded. Launching silent background installer...');
+          const child = spawn(tempExe, ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS'], {
+            detached: true,
+            stdio: 'ignore',
+          });
+          child.unref();
+          isQuitting = true;
+          app.quit();
+        });
+      });
+    }).on('error', (err) => {
+      console.warn('Update download error:', err);
+      file.close();
+      fs.unlink(tempExe, () => {});
+    });
+  } catch (e) {
+    console.warn('Apply update error:', e);
   }
 }
 
