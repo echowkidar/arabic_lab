@@ -163,6 +163,7 @@ export function App() {
               ...c,
               ...updatedCabin,
               online: isOnline,
+              screenData: isOnline ? (updatedCabin.screenData || c.screenData) : null,
               status: !c.student?.isActive
                 ? 'DISABLED'
                 : isOnline

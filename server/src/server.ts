@@ -28,6 +28,8 @@ const io = new SocketIOServer(server, {
     origin: '*',
     methods: ['GET', 'POST'],
   },
+  pingTimeout: 5000,
+  pingInterval: 10000,
 });
 
 setupSocketServer(io);

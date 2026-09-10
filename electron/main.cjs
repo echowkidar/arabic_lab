@@ -15,6 +15,9 @@ app.commandLine.appendSwitch(
 app.commandLine.appendSwitch('allow-http-screen-capture');
 app.commandLine.appendSwitch('enable-usermedia-screen-capturing');
 app.commandLine.appendSwitch('ignore-certificate-errors');
+app.commandLine.appendSwitch('disable-background-timer-throttling');
+app.commandLine.appendSwitch('disable-renderer-backgrounding');
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 
 let mainWindow = null;
 let tray = null;
@@ -36,6 +39,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
       contextIsolation: true,
+      backgroundThrottling: false,
     },
     autoHideMenuBar: true,
   });
