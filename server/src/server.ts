@@ -1,6 +1,7 @@
 import express from 'express';
 import http from 'http';
 import path from 'path';
+import fs from 'fs';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { Server as SocketIOServer } from 'socket.io';
@@ -47,6 +48,16 @@ app.use('/downloads', express.static(downloadsDir));
 // Health Check
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', lab: 'Arabic Language Laboratory', timestamp: new Date() });
+});
+
+// --- ELECTRON DESKTOP APPLICATION DOWNLOAD (.zip with ArabicLab.exe) ---
+app.get('/api/download/electron-desktop', (_req, res) => {
+  const filePath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Desktop.zip');
+  if (fs.existsSync(filePath)) {
+    res.download(filePath, 'ArabicLab-Windows-Desktop.zip');
+  } else {
+    res.status(404).json({ error: 'Desktop application package is currently being built.' });
+  }
 });
 
 // --- CABIN CLIENT DOWNLOAD (No pen drive needed) ---

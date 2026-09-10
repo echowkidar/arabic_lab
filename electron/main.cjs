@@ -19,10 +19,13 @@ function createWindow() {
     autoHideMenuBar: true,
   });
 
-  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
-  const startUrl = isDev ? 'http://localhost:5173' : `file://${path.join(__dirname, '../client/dist/index.html')}`;
+  const isDev = process.env.NODE_ENV === 'development' && !app.isPackaged;
+  const defaultServerUrl = process.env.LAB_URL || (isDev ? 'http://localhost:5173' : 'http://10.0.93.68:8080');
 
-  mainWindow.loadURL(startUrl);
+  mainWindow.loadURL(defaultServerUrl).catch(() => {
+    console.log('Central server not reachable, falling back to local client bundle');
+    mainWindow.loadFile(path.join(__dirname, '../client/dist/index.html')).catch(console.error);
+  });
 
   // Auto-register in Windows Startup on Boot (Restarts)
   if (app.isPackaged || process.env.ENABLE_AUTO_START === 'true') {

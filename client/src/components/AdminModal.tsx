@@ -348,23 +348,27 @@ export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => 
                 </div>
 
                 {/* Method 2: Electron Desktop App */}
-                <div className="glass-panel p-5 border-emerald-500/30 space-y-4">
+                <div className="glass-panel p-5 border-amber-500/30 space-y-4">
                   <div className="flex items-center gap-2.5">
                     <Laptop className="w-5 h-5 text-amber-400" />
                     <div>
-                      <h4 className="text-sm font-bold text-white">Electron Desktop App</h4>
-                      <p className="text-[11px] text-slate-400">Native Windows OS Background Surveillance</p>
+                      <h4 className="text-sm font-bold text-white">Native Electron Desktop App</h4>
+                      <p className="text-[11px] text-amber-300">ArabicLab.exe • Full OS Silent Surveillance</p>
                     </div>
                   </div>
 
                   <p className="text-xs text-slate-300 leading-relaxed">
-                    Runs the native desktop client with OS-level screen and audio capture hooks (<code className="text-emerald-400 font-mono text-[11px]">desktopCapturer</code>).
+                    Download the pre-packaged Windows Desktop App (<code className="text-emerald-400 font-mono text-[11px]">ArabicLab.exe</code>). Unzip and double-click to run — zero browser permission prompts.
                   </p>
 
-                  <div className="p-2.5 rounded bg-black/60 border border-emerald-900/60 font-mono text-[11px] text-emerald-300">
-                    <div># Run directly from terminal:</div>
-                    <div className="text-white font-bold">npm run electron</div>
-                  </div>
+                  <a
+                    href={`${SERVER_URL}/api/download/electron-desktop`}
+                    download="ArabicLab-Windows-Desktop.zip"
+                    className="btn-gold w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2 text-black shadow-lg"
+                  >
+                    <Download className="w-4 h-4 text-black" />
+                    <span>Download Electron App (.zip)</span>
+                  </a>
                 </div>
               </div>
 

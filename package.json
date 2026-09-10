@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Arabic Language Lab Management Software - 25 Cabins Real-Time Audio-Visual System",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "node dev.js",
     "dev:server": "npm --prefix server run dev",
@@ -12,9 +13,40 @@
     "build": "npm run build:server && npm run build:client",
     "start": "npm --prefix server start",
     "seed": "npm --prefix server run seed",
-    "electron": "electron electron/main.cjs"
+    "electron": "electron electron/main.cjs",
+    "dist:win": "electron-builder --win"
   },
-  "keywords": ["arabic-lab", "language-lab", "classroom-management", "webrtc"],
+  "build": {
+    "appId": "com.amu.arabiclab",
+    "productName": "ArabicLab",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**/*",
+      "client/dist/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    }
+  },
+  "keywords": [
+    "arabic-lab",
+    "language-lab",
+    "classroom-management",
+    "webrtc"
+  ],
   "author": "Antigravity AI",
-  "license": "ISC"
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^41.7.1",
+    "electron-builder": "^26.15.3"
+  }
 }

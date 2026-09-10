@@ -8,6 +8,9 @@ dist/
 */dist/
 build/
 */build/
+dist-electron/
+*.zip
+server/downloads/*.zip
 
 # Environment variables
 .env
