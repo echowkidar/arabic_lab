@@ -28,6 +28,7 @@ RUN npm install --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+COPY --from=builder /app/downloads ./downloads
 
 # Create directories for audio/video recordings, downloads, and database
 RUN mkdir -p uploads/recordings prisma downloads

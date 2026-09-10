@@ -52,43 +52,73 @@ app.get('/api/health', (_req, res) => {
 
 // --- ELECTRON DESKTOP INSTALLER (.exe - Single Standalone Installer) ---
 app.get('/api/download/electron-installer', (_req, res) => {
-  const possiblePaths = [
-    path.resolve(process.cwd(), './downloads/ArabicLab-Setup.exe'),
-    path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Installer.exe'),
-    path.resolve(__dirname, '../../downloads/ArabicLab-Setup.exe'),
-    path.resolve(__dirname, '../downloads/ArabicLab-Setup.exe')
+  const candidateDirs = [
+    path.resolve(process.cwd(), './downloads'),
+    path.resolve('/app/downloads'),
+    path.resolve(__dirname, '../../downloads'),
+    path.resolve(__dirname, '../downloads')
   ];
 
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      return res.download(p, 'ArabicLab-Setup.exe');
+  console.log('📥 [Download] Electron installer requested. Scanning directories...');
+  for (const dir of candidateDirs) {
+    if (fs.existsSync(dir)) {
+      try {
+        const files = fs.readdirSync(dir);
+        console.log(`📁 Scanning dir [${dir}], files found:`, files);
+        // Look for ArabicLab-Setup.exe or any .exe
+        const setupExe = files.find(f => f.toLowerCase() === 'arabiclab-setup.exe') ||
+                         files.find(f => f.toLowerCase().endsWith('.exe'));
+        if (setupExe) {
+          const fullPath = path.join(dir, setupExe);
+          console.log(`✅ Serving installer binary: ${fullPath}`);
+          return res.download(fullPath, 'ArabicLab-Setup.exe');
+        }
+      } catch (e) {
+        console.warn(`Error reading dir [${dir}]:`, e);
+      }
     }
   }
 
-  const zipPath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Desktop.zip');
-  if (fs.existsSync(zipPath)) {
-    return res.download(zipPath, 'ArabicLab-Windows-Desktop.zip');
+  // Fallback to zip if exe not found
+  for (const dir of candidateDirs) {
+    if (fs.existsSync(dir)) {
+      const zipPath = path.join(dir, 'ArabicLab-Windows-Desktop.zip');
+      if (fs.existsSync(zipPath)) {
+        console.log(`✅ Serving zip fallback: ${zipPath}`);
+        return res.download(zipPath, 'ArabicLab-Windows-Desktop.zip');
+      }
+    }
   }
+
+  console.error('❌ [Download] No installer (.exe or .zip) found in candidate directories!');
   res.status(404).json({ error: 'Installer file is not available on server.' });
 });
 
 // --- ELECTRON DESKTOP APPLICATION DOWNLOAD (.zip with ArabicLab.exe) ---
-app.get('/api/download/electron-desktop', (_req, res) => {
-  const possiblePaths = [
-    path.resolve(process.cwd(), './downloads/ArabicLab-Setup.exe'),
-    path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Installer.exe')
+app.get('/api/download/electron-desktop', (req, res) => {
+  // Delegate directly to the main installer endpoint
+  const candidateDirs = [
+    path.resolve(process.cwd(), './downloads'),
+    path.resolve('/app/downloads'),
+    path.resolve(__dirname, '../../downloads'),
+    path.resolve(__dirname, '../downloads')
   ];
 
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      return res.download(p, 'ArabicLab-Setup.exe');
+  for (const dir of candidateDirs) {
+    if (fs.existsSync(dir)) {
+      try {
+        const files = fs.readdirSync(dir);
+        const setupExe = files.find(f => f.toLowerCase() === 'arabiclab-setup.exe') ||
+                         files.find(f => f.toLowerCase().endsWith('.exe'));
+        if (setupExe) {
+          return res.download(path.join(dir, setupExe), 'ArabicLab-Setup.exe');
+        }
+      } catch (e) {
+        // ignore
+      }
     }
   }
 
-  const filePath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Desktop.zip');
-  if (fs.existsSync(filePath)) {
-    return res.download(filePath, 'ArabicLab-Windows-Desktop.zip');
-  }
   res.status(404).json({ error: 'Desktop application package is not available on server.' });
 });
 
