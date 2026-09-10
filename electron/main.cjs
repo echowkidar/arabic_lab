@@ -248,19 +248,36 @@ function downloadAndApplyUpdate(serverBaseUrl, downloadPath) {
   }
 }
 
-app.whenReady().then(() => {
-  createWindow();
-  createTray();
-});
+// Enforce Single Instance: Only 1 ArabicLab instance can run on the computer
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit();
-  }
-});
+if (!gotSingleInstanceLock) {
+  // Second instance attempt: quit immediately so duplicate processes never stay alive!
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // If another instance is launched, focus the existing window instead
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  app.whenReady().then(() => {
     createWindow();
-  }
-});
+    createTray();
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit();
+    }
+  });
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+}
