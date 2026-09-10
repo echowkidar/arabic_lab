@@ -51,9 +51,19 @@ app.get('/api/health', (_req, res) => {
 
 // --- CABIN CLIENT DOWNLOAD (No pen drive needed) ---
 app.get('/api/download/cabin-setup', (req, res) => {
-  const hostHeader = req.get('host') || `${req.hostname}:8080`;
-  const protocol = req.protocol;
-  const clientUrl = `${protocol}://${hostHeader}`;
+  let clientUrl = (req.query.clientUrl as string) || '';
+
+  if (!clientUrl) {
+    const forwardedHost = req.headers['x-forwarded-host'] as string;
+    const hostHeader = forwardedHost || req.get('host') || `${req.hostname}:8080`;
+    const protocol = (req.headers['x-forwarded-proto'] as string) || req.protocol;
+    clientUrl = `${protocol}://${hostHeader}`;
+  }
+
+  // If host has no port, Docker host runs Arabic Lab on port 8080 (port 80 has Nginx Proxy Manager)
+  if (!clientUrl.includes(':8080') && !clientUrl.includes(':5173') && !clientUrl.includes(':5000')) {
+    clientUrl = clientUrl.replace(/(https?:\/\/[^\/:]+)(\/|$)/, '$1:8080$2');
+  }
 
   const batScript = `@echo off
 title AMU Arabic Language Lab - Cabin Workstation Setup

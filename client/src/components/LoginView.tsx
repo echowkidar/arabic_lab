@@ -214,7 +214,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
           {/* Lab Technician Setup Download */}
           <div className="mt-3.5 pt-2.5 border-t border-emerald-900/40">
             <a
-              href={`${SERVER_URL}/api/download/cabin-setup`}
+              href={`${SERVER_URL}/api/download/cabin-setup?clientUrl=${encodeURIComponent(typeof window !== 'undefined' ? window.location.origin : '')}`}
               download="Setup-ArabicLab-Cabin.bat"
               className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400 hover:text-emerald-200 bg-emerald-950/80 hover:bg-emerald-900/80 px-3 py-1 rounded-lg border border-emerald-500/30 transition-all font-mono"
               title="Download 1-Click setup script for Student Cabin PCs on LAN"

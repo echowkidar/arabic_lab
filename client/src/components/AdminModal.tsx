@@ -338,7 +338,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => 
                   </p>
 
                   <a
-                    href={`${SERVER_URL}/api/download/cabin-setup`}
+                    href={`${SERVER_URL}/api/download/cabin-setup?clientUrl=${encodeURIComponent(typeof window !== 'undefined' ? window.location.origin : '')}`}
                     download="Setup-ArabicLab-Cabin.bat"
                     className="btn-primary w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2"
                   >
