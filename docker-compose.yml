@@ -15,7 +15,6 @@ services:
     volumes:
       - lab_db_data:/app/prisma
       - lab_recordings_data:/app/uploads/recordings
-      - ./server/downloads:/app/downloads
     ports:
       - "5000:5000"
     networks:
