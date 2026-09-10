@@ -1,11 +1,11 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, Tray, Menu, nativeImage, globalShortcut } = require('electron');
 const path = require('path');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 // Command line switches for WebRTC and Screen Capture
 app.commandLine.appendSwitch(
@@ -143,6 +143,103 @@ function createWindow() {
   });
 }
 
+let pinPromptWindow = null;
+
+function promptAdminPinToExit() {
+  if (pinPromptWindow) {
+    pinPromptWindow.focus();
+    return;
+  }
+
+  pinPromptWindow = new BrowserWindow({
+    width: 380,
+    height: 250,
+    resizable: false,
+    maximizable: false,
+    minimizable: false,
+    alwaysOnTop: true,
+    center: true,
+    title: 'Admin Verification — Arabic Language Lab',
+    backgroundColor: '#06110d',
+    autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  const pinHtml = `
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <title>Admin Authorization</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+      body { background: #06110d; color: #f1f5f9; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; padding: 18px; text-align: center; }
+      .icon { font-size: 26px; margin-bottom: 6px; color: #10b981; }
+      h3 { font-size: 15px; font-weight: 600; color: #e2e8f0; margin-bottom: 4px; }
+      p { font-size: 11px; color: #94a3b8; margin-bottom: 14px; }
+      input { width: 85%; padding: 8px 12px; font-size: 20px; letter-spacing: 8px; text-align: center; border: 1.5px solid #059669; border-radius: 8px; background: #022c22; color: #fff; outline: none; margin-bottom: 6px; }
+      input:focus { border-color: #34d399; box-shadow: 0 0 12px rgba(52, 211, 153, 0.4); }
+      .err { color: #f87171; font-size: 11px; font-weight: 600; min-height: 16px; margin-bottom: 12px; }
+      .btns { display: flex; gap: 10px; width: 85%; justify-content: center; }
+      button { flex: 1; padding: 9px 12px; border-radius: 6px; font-size: 12px; font-weight: 700; cursor: pointer; border: none; transition: 0.2s; }
+      .btn-exit { background: #dc2626; color: white; }
+      .btn-exit:hover { background: #ef4444; }
+      .btn-cancel { background: #1e293b; color: #cbd5e1; }
+      .btn-cancel:hover { background: #334155; }
+    </style>
+  </head>
+  <body>
+    <div class="icon">🔒</div>
+    <h3>Professor / Admin Authorization</h3>
+    <p>Enter 6-digit Admin PIN to exit laboratory suite:</p>
+    <input type="password" id="pin" maxlength="6" autofocus placeholder="••••••" />
+    <div id="err" class="err"></div>
+    <div class="btns">
+      <button class="btn-cancel" onclick="window.close()">Cancel</button>
+      <button class="btn-exit" onclick="checkPin()">Exit Lab</button>
+    </div>
+    <script>
+      const ADMIN_PIN = '123456';
+      const input = document.getElementById('pin');
+      const err = document.getElementById('err');
+      function checkPin() {
+        if (input.value === ADMIN_PIN) {
+          window.location.href = 'arabiclab://exit-confirmed';
+        } else {
+          err.innerText = 'Incorrect PIN! Access Denied.';
+          input.value = '';
+          input.focus();
+        }
+      }
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') checkPin();
+        if (e.key === 'Escape') window.close();
+      });
+      setTimeout(() => input.focus(), 150);
+    </script>
+  </body>
+  </html>
+  `;
+
+  pinPromptWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(pinHtml)}`);
+
+  pinPromptWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.includes('exit-confirmed')) {
+      event.preventDefault();
+      isQuitting = true;
+      if (pinPromptWindow) pinPromptWindow.destroy();
+      app.quit();
+    }
+  });
+
+  pinPromptWindow.on('closed', () => {
+    pinPromptWindow = null;
+  });
+}
+
 function createTray() {
   if (tray) return;
   try {
@@ -160,10 +257,9 @@ function createTray() {
         },
       },
       {
-        label: 'Exit Lab Suite',
+        label: 'Exit Lab Suite (Admin PIN Required)',
         click: () => {
-          isQuitting = true;
-          app.quit();
+          promptAdminPinToExit();
         },
       },
     ]);
@@ -271,6 +367,19 @@ if (!gotSingleInstanceLock) {
   app.whenReady().then(() => {
     createWindow();
     createTray();
+    try {
+      globalShortcut.register('CommandOrControl+Alt+Shift+Q', () => {
+        promptAdminPinToExit();
+      });
+    } catch (e) {
+      console.warn('Global shortcut registration notice:', e);
+    }
+  });
+
+  app.on('will-quit', () => {
+    try {
+      globalShortcut.unregisterAll();
+    } catch (e) {}
   });
 
   app.on('window-all-closed', () => {

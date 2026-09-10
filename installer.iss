@@ -2,7 +2,7 @@
 ; Creates a Single Standalone Setup.exe Installer
 
 #define MyAppName "Arabic Language Lab"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.3.0"
 #define MyAppPublisher "Department of Arabic, AMU"
 #define MyAppURL "https://arabic.echowkidar.in"
 #define MyAppExeName "ArabicLab.exe"
