@@ -99,13 +99,14 @@ app.get('/api/download/electron-installer', (_req, res) => {
 // --- DESKTOP APP AUTO-UPDATE MANIFEST ---
 app.get('/api/app/version', (_req, res) => {
   res.json({
-    version: '1.1.0',
+    version: '1.2.0',
     downloadUrl: '/api/download/setup',
     releaseDate: '2026-09-10',
     name: 'Arabic Language Lab Suite',
     mandatory: false,
     features: [
       'Native 1080p HD Screen Surveillance',
+      'Zero-Freeze Background Stealth Surveillance',
       '25 FPS Real-Time Single View',
       'Silent Tray Persistence on Close',
       'Fullscreen Edge-to-Edge Monitor'

@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 // Command line switches for WebRTC and Screen Capture
 app.commandLine.appendSwitch(
