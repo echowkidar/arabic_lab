@@ -7,6 +7,15 @@ const { spawn } = require('child_process');
 
 const APP_VERSION = '1.1.0';
 
+// Command line switches for WebRTC and Screen Capture
+app.commandLine.appendSwitch(
+  'unsafely-treat-insecure-origin-as-secure',
+  'http://10.0.93.68:8080,http://10.0.93.68:5000,http://localhost:8080,http://localhost:5000,http://localhost:5173'
+);
+app.commandLine.appendSwitch('allow-http-screen-capture');
+app.commandLine.appendSwitch('enable-usermedia-screen-capturing');
+app.commandLine.appendSwitch('ignore-certificate-errors');
+
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
@@ -133,7 +142,8 @@ function createWindow() {
 function createTray() {
   if (tray) return;
   try {
-    const icon = nativeImage.createEmpty();
+    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAcSURBVDhPY/wPBAwUACYGhgYGBupgYBgGQAcDAABqEAE9zXh9/wAAAABJRU5ErkJggg==';
+    const icon = nativeImage.createFromDataURL('data:image/png;base64,' + pngBase64);
     tray = new Tray(icon);
     const contextMenu = Menu.buildFromTemplate([
       {
