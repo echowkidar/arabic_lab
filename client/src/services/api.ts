@@ -3,8 +3,10 @@ import { User, Cabin, Recording, MonitoringLog } from '../types';
 export const SERVER_URL =
   import.meta.env.VITE_SERVER_URL ||
   (typeof window !== 'undefined'
-    ? `${window.location.protocol}//${window.location.hostname}:5000`
-    : 'http://localhost:5000');
+    ? window.location.port === '5173'
+      ? `${window.location.protocol}//${window.location.hostname}:5000`
+      : ''
+    : '');
 const API_BASE = `${SERVER_URL}/api`;
 
 function getAuthHeader(): HeadersInit {

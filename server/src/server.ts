@@ -51,10 +51,9 @@ app.get('/api/health', (_req, res) => {
 
 // --- CABIN CLIENT DOWNLOAD (No pen drive needed) ---
 app.get('/api/download/cabin-setup', (req, res) => {
-  const host = req.hostname;
-  const port = 5173;
+  const hostHeader = req.get('host') || `${req.hostname}:8080`;
   const protocol = req.protocol;
-  const clientUrl = `${protocol}://${host}:${port}`;
+  const clientUrl = `${protocol}://${hostHeader}`;
 
   const batScript = `@echo off
 title AMU Arabic Language Lab - Cabin Workstation Setup
