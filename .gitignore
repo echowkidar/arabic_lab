@@ -11,6 +11,8 @@ build/
 dist-electron/
 *.zip
 server/downloads/*.zip
+server/downloads/*.exe
+*.exe
 
 # Environment variables
 .env

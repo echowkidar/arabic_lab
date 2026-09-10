@@ -352,22 +352,22 @@ export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => 
                   <div className="flex items-center gap-2.5">
                     <Laptop className="w-5 h-5 text-amber-400" />
                     <div>
-                      <h4 className="text-sm font-bold text-white">Native Electron Desktop App</h4>
-                      <p className="text-[11px] text-amber-300">ArabicLab.exe • Full OS Silent Surveillance</p>
+                      <h4 className="text-sm font-bold text-white">Native Electron Installer (.exe)</h4>
+                      <p className="text-[11px] text-amber-300">ArabicLab-Setup.exe • Single Standalone File</p>
                     </div>
                   </div>
 
                   <p className="text-xs text-slate-300 leading-relaxed">
-                    Download the pre-packaged Windows Desktop App (<code className="text-emerald-400 font-mono text-[11px]">ArabicLab.exe</code>). Unzip and double-click to run — zero browser permission prompts.
+                    Single-file Windows Setup installer (<code className="text-emerald-400 font-mono text-[11px]">ArabicLab-Setup.exe</code>). Zero zip extraction required. Automatically installs, creates Desktop shortcuts, and configures Windows Auto-Startup on reboot.
                   </p>
 
                   <a
-                    href={`${SERVER_URL}/api/download/electron-desktop`}
-                    download="ArabicLab-Windows-Desktop.zip"
+                    href={`${SERVER_URL}/api/download/electron-installer`}
+                    download="ArabicLab-Setup.exe"
                     className="btn-gold w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2 text-black shadow-lg"
                   >
                     <Download className="w-4 h-4 text-black" />
-                    <span>Download Electron App (.zip)</span>
+                    <span>Download Standalone Setup (.exe)</span>
                   </a>
                 </div>
               </div>

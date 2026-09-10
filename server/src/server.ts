@@ -50,14 +50,30 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', lab: 'Arabic Language Laboratory', timestamp: new Date() });
 });
 
+// --- ELECTRON DESKTOP INSTALLER (.exe - Single Standalone Installer) ---
+app.get('/api/download/electron-installer', (_req, res) => {
+  const installerPath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Installer.exe');
+  if (fs.existsSync(installerPath)) {
+    return res.download(installerPath, 'ArabicLab-Setup.exe');
+  }
+  const zipPath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Desktop.zip');
+  if (fs.existsSync(zipPath)) {
+    return res.download(zipPath, 'ArabicLab-Windows-Desktop.zip');
+  }
+  res.status(404).json({ error: 'Installer is currently being built.' });
+});
+
 // --- ELECTRON DESKTOP APPLICATION DOWNLOAD (.zip with ArabicLab.exe) ---
 app.get('/api/download/electron-desktop', (_req, res) => {
+  const installerPath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Installer.exe');
+  if (fs.existsSync(installerPath)) {
+    return res.download(installerPath, 'ArabicLab-Setup.exe');
+  }
   const filePath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Desktop.zip');
   if (fs.existsSync(filePath)) {
-    res.download(filePath, 'ArabicLab-Windows-Desktop.zip');
-  } else {
-    res.status(404).json({ error: 'Desktop application package is currently being built.' });
+    return res.download(filePath, 'ArabicLab-Windows-Desktop.zip');
   }
+  res.status(404).json({ error: 'Desktop application package is currently being built.' });
 });
 
 // --- CABIN CLIENT DOWNLOAD (No pen drive needed) ---

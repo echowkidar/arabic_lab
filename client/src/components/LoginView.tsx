@@ -214,16 +214,16 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
           {/* Lab Technician Setup Download Options */}
           <div className="mt-4 pt-3 border-t border-emerald-900/40 flex flex-col sm:flex-row items-center justify-center gap-2">
             <a
-              href={`${SERVER_URL}/api/download/electron-desktop`}
-              download="ArabicLab-Windows-Desktop.zip"
+              href={`${SERVER_URL}/api/download/electron-installer`}
+              download="ArabicLab-Setup.exe"
               className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-300 hover:text-amber-100 bg-amber-950/80 hover:bg-amber-900/80 px-3 py-1.5 rounded-lg border border-amber-500/40 transition-all font-mono shadow-md"
-              title="Download full Native Windows Electron Desktop App (ArabicLab.exe) with silent OS surveillance"
+              title="Download standalone Single-File Installer (ArabicLab-Setup.exe) - Zero Zip extraction, Auto-Start on Windows boot"
             >
               <Download className="w-3.5 h-3.5 text-amber-400" />
               <span>
                 {isArabic
-                  ? '💻 تحميل تطبيق إلكترون المكتبي (ArabicLab.exe)'
-                  : '💻 Download Native Electron App (ArabicLab.exe)'}
+                  ? '💻 مثبت البرنامج المكتبي (ArabicLab-Setup.exe)'
+                  : '💻 Download Setup (ArabicLab-Setup.exe)'}
               </span>
             </a>
 
