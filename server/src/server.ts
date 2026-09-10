@@ -52,28 +52,44 @@ app.get('/api/health', (_req, res) => {
 
 // --- ELECTRON DESKTOP INSTALLER (.exe - Single Standalone Installer) ---
 app.get('/api/download/electron-installer', (_req, res) => {
-  const installerPath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Installer.exe');
-  if (fs.existsSync(installerPath)) {
-    return res.download(installerPath, 'ArabicLab-Setup.exe');
+  const possiblePaths = [
+    path.resolve(process.cwd(), './downloads/ArabicLab-Setup.exe'),
+    path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Installer.exe'),
+    path.resolve(__dirname, '../../downloads/ArabicLab-Setup.exe'),
+    path.resolve(__dirname, '../downloads/ArabicLab-Setup.exe')
+  ];
+
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+      return res.download(p, 'ArabicLab-Setup.exe');
+    }
   }
+
   const zipPath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Desktop.zip');
   if (fs.existsSync(zipPath)) {
     return res.download(zipPath, 'ArabicLab-Windows-Desktop.zip');
   }
-  res.status(404).json({ error: 'Installer is currently being built.' });
+  res.status(404).json({ error: 'Installer file is not available on server.' });
 });
 
 // --- ELECTRON DESKTOP APPLICATION DOWNLOAD (.zip with ArabicLab.exe) ---
 app.get('/api/download/electron-desktop', (_req, res) => {
-  const installerPath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Installer.exe');
-  if (fs.existsSync(installerPath)) {
-    return res.download(installerPath, 'ArabicLab-Setup.exe');
+  const possiblePaths = [
+    path.resolve(process.cwd(), './downloads/ArabicLab-Setup.exe'),
+    path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Installer.exe')
+  ];
+
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+      return res.download(p, 'ArabicLab-Setup.exe');
+    }
   }
+
   const filePath = path.resolve(process.cwd(), './downloads/ArabicLab-Windows-Desktop.zip');
   if (fs.existsSync(filePath)) {
     return res.download(filePath, 'ArabicLab-Windows-Desktop.zip');
   }
-  res.status(404).json({ error: 'Desktop application package is currently being built.' });
+  res.status(404).json({ error: 'Desktop application package is not available on server.' });
 });
 
 // --- CABIN CLIENT DOWNLOAD (No pen drive needed) ---

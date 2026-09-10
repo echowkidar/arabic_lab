@@ -11,8 +11,7 @@ build/
 dist-electron/
 *.zip
 server/downloads/*.zip
-server/downloads/*.exe
-*.exe
+!server/downloads/ArabicLab-Setup.exe
 
 # Environment variables
 .env
