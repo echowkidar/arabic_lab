@@ -1,16 +1,13 @@
-const { app, BrowserWindow, ipcMain, desktopCapturer, session } = require('electron');
+const { app, BrowserWindow, ipcMain, desktopCapturer, session, Tray, Menu, nativeImage } = require('electron');
 const path = require('path');
 
-// Treat plain HTTP LAN IP as a secure context to unlock getDisplayMedia and getUserMedia
-app.commandLine.appendSwitch(
-  'unsafely-treat-insecure-origin-as-secure',
-  'http://10.0.93.68:8080,http://10.0.93.68:5000,http://localhost:8080,http://localhost:5000,http://localhost:5173'
-);
-app.commandLine.appendSwitch('allow-http-screen-capture');
-app.commandLine.appendSwitch('enable-usermedia-screen-capturing');
-app.commandLine.appendSwitch('ignore-certificate-errors');
-
 let mainWindow = null;
+let tray = null;
+let isQuitting = false;
+
+app.on('before-quit', () => {
+  isQuitting = true;
+});
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -102,12 +99,59 @@ function createWindow() {
     return app.getLoginItemSettings().openAtLogin;
   });
 
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow.hide();
+      return false;
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
 
-app.whenReady().then(createWindow);
+function createTray() {
+  if (tray) return;
+  try {
+    const icon = nativeImage.createEmpty();
+    tray = new Tray(icon);
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: 'Open Arabic Language Lab',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        },
+      },
+      {
+        label: 'Exit Lab Suite',
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ]);
+    tray.setToolTip('Arabic Language Lab (Cabin Surveillance Active)');
+    tray.setContextMenu(contextMenu);
+    tray.on('double-click', () => {
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+  } catch (e) {
+    console.warn('Tray init notice:', e);
+  }
+}
+
+app.whenReady().then(() => {
+  createWindow();
+  createTray();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

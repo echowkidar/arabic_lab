@@ -163,6 +163,23 @@ export function setupSocketServer(io: SocketIOServer) {
       }
     });
 
+    // Professor requests High-FPS (25 FPS) 1080p Single View Surveillance
+    socket.on('start-active-surveillance', (data: { cabinNumber: number; fps?: number; width?: number; height?: number }) => {
+      const { cabinNumber, fps = 25, width = 1920, height = 1080 } = data;
+      const cabin = cabinStates[cabinNumber];
+      if (cabin && cabin.online && cabin.socketId) {
+        io.to(cabin.socketId).emit('set-surveillance-mode', { active: true, fps, width, height });
+      }
+    });
+
+    socket.on('stop-active-surveillance', (data: { cabinNumber: number }) => {
+      const { cabinNumber } = data;
+      const cabin = cabinStates[cabinNumber];
+      if (cabin && cabin.online && cabin.socketId) {
+        io.to(cabin.socketId).emit('set-surveillance-mode', { active: false });
+      }
+    });
+
     // Professor toggles Student Webcam Stream
     socket.on('toggle-student-webcam', (data: { cabinNumber: number; enabled: boolean }) => {
       const { cabinNumber, enabled } = data;

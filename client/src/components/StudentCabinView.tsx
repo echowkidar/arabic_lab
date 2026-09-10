@@ -77,10 +77,14 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
     const electronAPI = (window as any).electronAPI;
     let isMounted = true;
     let timer: any = null;
+    let isCapturing = false;
+    let currentWidth = 960;
+    let currentHeight = 540;
 
-    const captureScreenFrame = async (width = 640, height = 360) => {
-      if (!isMounted) return;
+    const captureScreenFrame = async (width = currentWidth, height = currentHeight) => {
+      if (!isMounted || isCapturing) return;
       if (electronAPI && electronAPI.getDesktopSources) {
+        isCapturing = true;
         try {
           const sources = await electronAPI.getDesktopSources({
             types: ['screen'],
@@ -94,27 +98,53 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
           }
         } catch (err) {
           console.warn('Background screen capture error:', err);
+        } finally {
+          isCapturing = false;
         }
       }
     };
 
     // Immediate initial capture
-    captureScreenFrame();
+    captureScreenFrame(currentWidth, currentHeight);
 
-    // Regular interval capture every 1.5 seconds
+    // Regular interval capture (every 1.5 seconds for grid view)
     timer = setInterval(() => {
-      captureScreenFrame(640, 360);
+      captureScreenFrame(currentWidth, currentHeight);
     }, 1500);
 
-    // High-res frame request when professor opens full monitor modal
-    const handleHighResRequest = () => {
-      captureScreenFrame(1280, 720);
+    // High-FPS (25 FPS) 1080p mode when professor opens full monitor modal
+    const handleSetSurveillanceMode = (data: { active: boolean; fps?: number; width?: number; height?: number }) => {
+      if (timer) clearInterval(timer);
+      if (data && data.active) {
+        const targetFps = data.fps || 25;
+        const intervalMs = Math.max(40, Math.floor(1000 / targetFps));
+        currentWidth = data.width || 1920;
+        currentHeight = data.height || 1080;
+        console.log(`⚡ Cabin ${cabinNumber}: High-FPS Surveillance (${targetFps} FPS @ ${currentWidth}x${currentHeight})`);
+        captureScreenFrame(currentWidth, currentHeight);
+        timer = setInterval(() => {
+          captureScreenFrame(currentWidth, currentHeight);
+        }, intervalMs);
+      } else {
+        currentWidth = 960;
+        currentHeight = 540;
+        timer = setInterval(() => {
+          captureScreenFrame(currentWidth, currentHeight);
+        }, 1500);
+      }
     };
+
+    const handleHighResRequest = () => {
+      captureScreenFrame(1920, 1080);
+    };
+
+    socket.on('set-surveillance-mode', handleSetSurveillanceMode);
     socket.on('capture-high-res-frame', handleHighResRequest);
 
     return () => {
       isMounted = false;
       if (timer) clearInterval(timer);
+      socket.off('set-surveillance-mode', handleSetSurveillanceMode);
       socket.off('capture-high-res-frame', handleHighResRequest);
     };
   }, [cabinNumber]);

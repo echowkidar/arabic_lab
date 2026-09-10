@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Cabin, User, Language } from '../types';
 import {
   X, Eye, Camera, CameraOff, Volume2, VolumeX, Disc,
-  CheckCircle, ChevronLeft, ChevronRight, Video, ShieldAlert, Download
+  CheckCircle, ChevronLeft, ChevronRight, Video, ShieldAlert, Download,
+  Maximize2, Minimize2
 } from 'lucide-react';
 import { renderMockWorkstation, renderOfflineWorkstation } from '../services/screenSimulators';
 import { uploadRecording, logAudit } from '../services/api';
@@ -47,13 +48,48 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
   const recordTimerRef = useRef<number | null>(null);
 
   // Log compliance audit on open
+  const modalContainerRef = useRef<HTMLDivElement | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Fullscreen Handlers
+  const handleToggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      if (modalContainerRef.current?.requestFullscreen) {
+        modalContainerRef.current.requestFullscreen().catch(() => setIsFullscreen(true));
+      } else {
+        setIsFullscreen(!isFullscreen);
+      }
+    } else {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => setIsFullscreen(false));
+      } else {
+        setIsFullscreen(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  // Activate 25 FPS 1080p Surveillance on Single View Mount
   useEffect(() => {
     logAudit(cabin.cabinNumber, 'SCREEN_VIEW').catch(() => {});
     socket.emit('request-silent-monitor', { cabinNumber: cabin.cabinNumber });
-    socket.emit('request-high-res-screen', { cabinNumber: cabin.cabinNumber });
+    socket.emit('start-active-surveillance', {
+      cabinNumber: cabin.cabinNumber,
+      fps: 25,
+      width: 1920,
+      height: 1080,
+    });
 
     return () => {
       socket.emit('stop-silent-monitor', { cabinNumber: cabin.cabinNumber });
+      socket.emit('stop-active-surveillance', { cabinNumber: cabin.cabinNumber });
     };
   }, [cabin.cabinNumber]);
 
@@ -246,7 +282,14 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
 
   return (
     <div className="modal-backdrop">
-      <div className="glass-panel-elevated w-full max-w-6xl max-h-[92vh] flex flex-col overflow-hidden relative border border-cyan-500/30 shadow-[0_0_50px_rgba(6,182,212,0.15)]">
+      <div
+        ref={modalContainerRef}
+        className={`glass-panel-elevated w-full flex flex-col overflow-hidden relative border border-cyan-500/30 shadow-[0_0_50px_rgba(6,182,212,0.15)] transition-all ${
+          isFullscreen
+            ? 'fixed inset-0 z-50 w-screen h-screen max-w-none max-h-none rounded-none'
+            : 'max-w-6xl max-h-[92vh]'
+        }`}
+      >
         
         {/* Top Monitor Bar */}
         <div className="px-6 py-3.5 bg-slate-950/80 border-b border-emerald-900/50 flex flex-wrap items-center justify-between gap-4">
@@ -350,6 +393,18 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
               <span>{isArabic ? 'بدء مكالمة' : '1:1 Call'}</span>
             </button>
 
+            {/* Fullscreen Monitor Toggle */}
+            <button
+              onClick={handleToggleFullscreen}
+              className={`btn-outline text-xs py-2 px-3 flex items-center gap-1 ${
+                isFullscreen ? 'border-emerald-500/60 text-emerald-300 bg-emerald-950/40' : 'text-slate-300'
+              }`}
+              title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen Monitor (1080p Edge-to-Edge)'}
+            >
+              {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
+              <span>{isFullscreen ? (isArabic ? 'تصغير' : 'Exit') : (isArabic ? 'ملء الشاشة' : 'Fullscreen')}</span>
+            </button>
+
             {/* Close Button */}
             <button
               onClick={onClose}
@@ -367,14 +422,18 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
             <img
               src={cabin.screenData}
               alt={`Cabin ${cabinPad} Real-Time Desktop Surveillance`}
-              className="w-full h-full max-h-[75vh] object-contain shadow-2xl"
+              className={`w-full h-full object-contain shadow-2xl ${
+                isFullscreen ? 'max-h-screen' : 'max-h-[75vh]'
+              }`}
             />
           ) : (
             <canvas
               ref={canvasRef}
-              width={1280}
-              height={720}
-              className="w-full h-full max-h-[75vh] object-contain"
+              width={1920}
+              height={1080}
+              className={`w-full h-full object-contain ${
+                isFullscreen ? 'max-h-screen' : 'max-h-[75vh]'
+              }`}
             />
           )}
 
