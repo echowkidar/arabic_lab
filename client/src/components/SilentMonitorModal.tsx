@@ -50,6 +50,7 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
   useEffect(() => {
     logAudit(cabin.cabinNumber, 'SCREEN_VIEW').catch(() => {});
     socket.emit('request-silent-monitor', { cabinNumber: cabin.cabinNumber });
+    socket.emit('request-high-res-screen', { cabinNumber: cabin.cabinNumber });
 
     return () => {
       socket.emit('stop-silent-monitor', { cabinNumber: cabin.cabinNumber });
@@ -69,6 +70,10 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
 
     const render = () => {
       if (!active) return;
+      if (cabin.online && cabin.screenData) {
+        animId = requestAnimationFrame(render);
+        return;
+      }
       const elapsed = (Date.now() - startTime) / 1000;
       if (cabin.online) {
         renderMockWorkstation(
@@ -357,13 +362,21 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
 
         {/* Main Monitor Display Area */}
         <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center min-h-[500px]">
-          {/* Real-time screen canvas */}
-          <canvas
-            ref={canvasRef}
-            width={1280}
-            height={720}
-            className="w-full h-full max-h-[75vh] object-contain"
-          />
+          {/* Real-time screen canvas or real student desktop */}
+          {cabin.online && cabin.screenData ? (
+            <img
+              src={cabin.screenData}
+              alt={`Cabin ${cabinPad} Real-Time Desktop Surveillance`}
+              className="w-full h-full max-h-[75vh] object-contain shadow-2xl"
+            />
+          ) : (
+            <canvas
+              ref={canvasRef}
+              width={1280}
+              height={720}
+              className="w-full h-full max-h-[75vh] object-contain"
+            />
+          )}
 
           {/* Draggable Circular PiP Webcam Overlay */}
           {isWebcamActive && (
@@ -395,7 +408,7 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
             <div className="flex items-center gap-3">
               <span className="flex items-center gap-1.5 text-emerald-400 font-bold font-mono">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                1080p @ 60fps • Sub-15ms LAN
+                {cabin.screenData ? 'SILENT LIVE DESKTOP SURVEILLANCE • LAN' : '1080p @ 60fps • Sub-15ms LAN'}
               </span>
               <span className="text-slate-500">|</span>
               <span>Audio: {isAudioListening ? `${cabin.audioLevel}% (Active)` : 'Muted'}</span>

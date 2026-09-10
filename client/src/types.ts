@@ -31,6 +31,7 @@ export interface Cabin {
   handRaised: boolean;
   isScreenShared: boolean;
   isWebcamActive: boolean;
+  screenData?: string | null;
 }
 
 export interface Recording {

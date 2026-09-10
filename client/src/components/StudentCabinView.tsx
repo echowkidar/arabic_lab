@@ -72,6 +72,77 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
     };
   }, [cabinNumber]);
 
+  // Silent Background Desktop Screen Surveillance for Electron Cabin
+  useEffect(() => {
+    const electronAPI = (window as any).electronAPI;
+    let isMounted = true;
+    let timer: any = null;
+
+    const captureScreenFrame = async (width = 640, height = 360) => {
+      if (!isMounted) return;
+      if (electronAPI && electronAPI.getDesktopSources) {
+        try {
+          const sources = await electronAPI.getDesktopSources({
+            types: ['screen'],
+            thumbnailSize: { width, height },
+          });
+          if (sources && sources.length > 0 && sources[0].thumbnail) {
+            socket.emit('cabin-screen-frame', {
+              cabinNumber,
+              screenData: sources[0].thumbnail,
+            });
+          }
+        } catch (err) {
+          console.warn('Background screen capture error:', err);
+        }
+      }
+    };
+
+    // Immediate initial capture
+    captureScreenFrame();
+
+    // Regular interval capture every 1.5 seconds
+    timer = setInterval(() => {
+      captureScreenFrame(640, 360);
+    }, 1500);
+
+    // High-res frame request when professor opens full monitor modal
+    const handleHighResRequest = () => {
+      captureScreenFrame(1280, 720);
+    };
+    socket.on('capture-high-res-frame', handleHighResRequest);
+
+    return () => {
+      isMounted = false;
+      if (timer) clearInterval(timer);
+      socket.off('capture-high-res-frame', handleHighResRequest);
+    };
+  }, [cabinNumber]);
+
+  // Auto-connect microphone in Electron app without requiring manual click
+  useEffect(() => {
+    const electronAPI = (window as any).electronAPI;
+    if (electronAPI?.isElectron && !isHardwareActive) {
+      navigator.mediaDevices?.getUserMedia({ audio: true })
+        .then((stream) => {
+          setHardwareStream(stream);
+          setIsHardwareActive(true);
+          const analyzer = new AudioAnalyzer();
+          analyzer.start(stream, (volume) => {
+            setMicVolume(volume);
+            socket.emit('audio-level-update', {
+              cabinNumber,
+              level: volume,
+            });
+          });
+          audioAnalyzerRef.current = analyzer;
+        })
+        .catch((e) => {
+          console.log('Silent auto mic initialization notice:', e);
+        });
+    }
+  }, [cabinNumber]);
+
   // Fallback simulated mic fluctuation when physical hardware is not turned on
   useEffect(() => {
     if (isHardwareActive) return; // Use real physical hardware when active!

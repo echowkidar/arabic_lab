@@ -29,6 +29,11 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
 
     const render = () => {
       if (!active) return;
+      if (cabin.online && cabin.screenData) {
+        // Real screen image is rendered via <img> tag, pause canvas loop
+        animFrameRef.current = requestAnimationFrame(render);
+        return;
+      }
       const elapsed = (Date.now() - startTime) / 1000;
 
       if (cabin.online) {
@@ -123,15 +128,23 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
         </span>
       </div>
 
-      {/* Screen Preview Canvas */}
+      {/* Screen Preview Canvas or Real Live Desktop */}
       <div className="relative rounded-lg overflow-hidden border border-emerald-900/40 bg-black/60 aspect-video mb-2.5 group cursor-pointer"
            onClick={() => onMonitor(cabin)}>
-        <canvas
-          ref={canvasRef}
-          width={280}
-          height={158}
-          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
-        />
+        {cabin.online && cabin.screenData ? (
+          <img
+            src={cabin.screenData}
+            alt={`Cabin ${cabinPad} Live Desktop`}
+            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+          />
+        ) : (
+          <canvas
+            ref={canvasRef}
+            width={280}
+            height={158}
+            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+          />
+        )}
 
         {/* Hover Overlay Hint */}
         <div className="absolute inset-0 bg-emerald-950/75 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1.5 text-emerald-300">
@@ -150,9 +163,13 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
             </span>
           )}
           {cabin.online && (
-            <span className="bg-black/70 text-emerald-400 text-[9px] px-1.5 py-0.5 rounded flex items-center gap-0.5">
+            <span className={`text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1 font-bold ${
+              cabin.screenData
+                ? 'bg-emerald-600/90 text-white shadow-sm border border-emerald-400/40'
+                : 'bg-black/70 text-emerald-400'
+            }`}>
               <Monitor className="w-2.5 h-2.5" />
-              <span>LIVE</span>
+              <span>{cabin.screenData ? 'DESKTOP' : 'LIVE'}</span>
             </span>
           )}
         </div>

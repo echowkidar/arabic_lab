@@ -11,6 +11,7 @@ export interface CabinLiveState {
   handRaised: boolean;
   isScreenShared: boolean;
   isWebcamActive: boolean;
+  screenData?: string | null;
   lastActive: Date | null;
 }
 
@@ -28,6 +29,7 @@ for (let i = 1; i <= 25; i++) {
     handRaised: false,
     isScreenShared: false,
     isWebcamActive: false,
+    screenData: null,
     lastActive: null,
   };
 }
@@ -138,6 +140,26 @@ export function setupSocketServer(io: SocketIOServer) {
         io.to(cabin.socketId).emit('stop-silent-stream-to-prof', {
           professorSocketId: socket.id,
         });
+      }
+    });
+
+    // Real-Time Student Desktop Screen Frame Update
+    socket.on('cabin-screen-frame', (data: { cabinNumber: number; screenData: string }) => {
+      const { cabinNumber, screenData } = data;
+      if (cabinStates[cabinNumber]) {
+        cabinStates[cabinNumber].screenData = screenData;
+        cabinStates[cabinNumber].isScreenShared = true;
+        // Broadcast screen frame to all professors
+        io.to('professors').emit('cabin-screen-update', { cabinNumber, screenData });
+      }
+    });
+
+    // High-Resolution Screen Request for Fullscreen Monitor
+    socket.on('request-high-res-screen', (data: { cabinNumber: number }) => {
+      const { cabinNumber } = data;
+      const cabin = cabinStates[cabinNumber];
+      if (cabin && cabin.online && cabin.socketId) {
+        io.to(cabin.socketId).emit('capture-high-res-frame');
       }
     });
 
@@ -284,6 +306,7 @@ export function setupSocketServer(io: SocketIOServer) {
             handRaised: false,
             isScreenShared: false,
             isWebcamActive: false,
+            screenData: null,
           };
           io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
           console.log(`🔌 Cabin ${cabinNumber} (${name}) went offline`);

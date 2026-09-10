@@ -49,11 +49,14 @@ function createWindow() {
   });
 
   const isDev = process.env.NODE_ENV === 'development' && !app.isPackaged;
-  const defaultServerUrl = process.env.LAB_URL || (isDev ? 'http://localhost:5173' : 'http://10.0.93.68:8080');
+  const defaultServerUrl = process.env.LAB_URL || (isDev ? 'http://localhost:5173' : 'https://arabic.echowkidar.in');
 
   mainWindow.loadURL(defaultServerUrl).catch(() => {
-    console.log('Central server not reachable, falling back to local client bundle');
-    mainWindow.loadFile(path.join(__dirname, '../client/dist/index.html')).catch(console.error);
+    console.log('Primary domain not reachable, falling back to LAN IP: http://10.0.93.68:8080');
+    mainWindow.loadURL('http://10.0.93.68:8080').catch(() => {
+      console.log('Central server not reachable, falling back to local client bundle');
+      mainWindow.loadFile(path.join(__dirname, '../client/dist/index.html')).catch(console.error);
+    });
   });
 
   // Auto-register in Windows Startup on Boot (Restarts)

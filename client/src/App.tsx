@@ -118,6 +118,17 @@ export function App() {
       );
     });
 
+    // Real-Time Student Desktop Screen Surveillance Stream
+    socket.on('cabin-screen-update', (data: { cabinNumber: number; screenData: string }) => {
+      setCabins((prev) =>
+        prev.map((c) =>
+          c.cabinNumber === data.cabinNumber
+            ? { ...c, screenData: data.screenData, isScreenShared: true }
+            : c
+        )
+      );
+    });
+
     return () => {
       socket.off('incoming-call');
       socket.off('call-ended-by-peer');
@@ -125,6 +136,7 @@ export function App() {
       socket.off('hand-lowered');
       socket.off('cabin-updated');
       socket.off('cabin-audio-level');
+      socket.off('cabin-screen-update');
     };
   }, [user]);
 
