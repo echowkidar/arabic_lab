@@ -459,6 +459,7 @@ export function App() {
       {/* Classroom Broadcast Modal */}
       {broadcastOpen && (
         <BroadcastStudioModal
+          currentUser={user || undefined}
           onClose={() => setBroadcastOpen(false)}
           language={language}
         />

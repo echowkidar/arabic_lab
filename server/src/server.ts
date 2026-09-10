@@ -37,12 +37,64 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Static file serving for recordings
+// Static file serving for recordings and downloads
 const uploadDir = path.resolve(process.cwd(), process.env.RECORDINGS_DIR || './uploads/recordings');
 app.use('/uploads/recordings', express.static(uploadDir));
+
+const downloadsDir = path.resolve(process.cwd(), './downloads');
+app.use('/downloads', express.static(downloadsDir));
 
 // Health Check
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', lab: 'Arabic Language Laboratory', timestamp: new Date() });
+});
+
+// --- CABIN CLIENT DOWNLOAD (No pen drive needed) ---
+app.get('/api/download/cabin-setup', (req, res) => {
+  const host = req.hostname;
+  const port = 5173;
+  const protocol = req.protocol;
+  const clientUrl = `${protocol}://${host}:${port}`;
+
+  const batScript = `@echo off
+title AMU Arabic Language Lab - Cabin Workstation Setup
+color 0A
+echo ===================================================================
+echo   ALIGARH MUSLIM UNIVERSITY (AMU) - DEPARTMENT OF ARABIC
+echo   ARABIC LANGUAGE LAB CLIENT SETUP (CABIN WORKSTATION)
+echo ===================================================================
+echo.
+echo Connecting Cabin to Lab Server at: ${clientUrl}
+echo.
+
+:: 1. Launch in Fullscreen App Mode
+start msedge --app="${clientUrl}" --kiosk --start-fullscreen --unsafely-treat-insecure-origin-as-secure="${clientUrl}" 2>nul
+if errorlevel 1 (
+    start chrome --app="${clientUrl}" --kiosk --start-fullscreen --unsafely-treat-insecure-origin-as-secure="${clientUrl}" 2>nul
+)
+
+:: 2. Create Windows Startup Shortcut for Auto-Launch on Boot
+set "STARTUP_FOLDER=%APPDATA%\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
+set "SHORTCUT_PATH=%STARTUP_FOLDER%\\ArabicLabCabin.bat"
+
+echo Configuring auto-start in Windows Startup...
+(
+  echo @echo off
+  echo start msedge --app="${clientUrl}" --kiosk --start-fullscreen --unsafely-treat-insecure-origin-as-secure="${clientUrl}" 2^^^>nul
+  echo if errorlevel 1 start chrome --app="${clientUrl}" --kiosk --start-fullscreen --unsafely-treat-insecure-origin-as-secure="${clientUrl}" 2^^^>nul
+) > "%SHORTCUT_PATH%"
+
+echo.
+echo [SUCCESS] Cabin Workstation configured successfully!
+echo This computer will now automatically open the Arabic Language Lab
+echo in Fullscreen Mode whenever Windows boots up.
+echo.
+timeout /t 5
+`;
+
+  res.setHeader('Content-Type', 'application/x-bat');
+  res.setHeader('Content-Disposition', 'attachment; filename="Setup-ArabicLab-Cabin.bat"');
+  res.send(batScript);
 });
 
 // --- AUTH ROUTES ---

@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { User, Language } from '../types';
-import { login } from '../services/api';
-import { Lock, User as UserIcon, ArrowRight, Sparkles, Globe } from 'lucide-react';
+import { login, SERVER_URL } from '../services/api';
+import { Lock, User as UserIcon, ArrowRight, Sparkles, Globe, Download } from 'lucide-react';
 
 interface LoginViewProps {
   onLoginSuccess: (user: User, token: string) => void;
@@ -13,8 +13,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
   const isArabic = language === 'ar';
   const isUrdu = language === 'ur';
 
-  const [username, setUsername] = useState('professor');
-  const [password, setPassword] = useState('Prof@Lab2026');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [consent, setConsent] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -111,6 +111,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 required
+                autoComplete="off"
                 className="w-full pl-9 pr-3 py-2.5 bg-slate-900/90 border border-emerald-900/60 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400"
                 placeholder="e.g. professor, cabin01, admin"
               />
@@ -131,6 +132,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
+                autoComplete="new-password"
                 className="w-full pl-9 pr-3 py-2.5 bg-slate-900/90 border border-emerald-900/60 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400"
                 placeholder="••••••••"
               />
@@ -207,6 +209,23 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
             >
               ⚙️ Admin
             </button>
+          </div>
+
+          {/* Lab Technician Setup Download */}
+          <div className="mt-3.5 pt-2.5 border-t border-emerald-900/40">
+            <a
+              href={`${SERVER_URL}/api/download/cabin-setup`}
+              download="Setup-ArabicLab-Cabin.bat"
+              className="inline-flex items-center gap-1.5 text-[11px] text-emerald-400 hover:text-emerald-200 bg-emerald-950/80 hover:bg-emerald-900/80 px-3 py-1 rounded-lg border border-emerald-500/30 transition-all font-mono"
+              title="Download 1-Click setup script for Student Cabin PCs on LAN"
+            >
+              <Download className="w-3 h-3 text-emerald-400" />
+              <span>
+                {isArabic
+                  ? 'تحميل ملف تثبيت كابينة الطالب (Setup)'
+                  : 'Lab Tech: Download 1-Click Cabin Client Setup'}
+              </span>
+            </a>
           </div>
         </div>
       </div>

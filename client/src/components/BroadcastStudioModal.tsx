@@ -1,19 +1,38 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Language } from '../types';
-import { X, Radio, Monitor, Camera, CameraOff, Mic, MicOff, Users, Disc, CheckCircle } from 'lucide-react';
+import { Language, User } from '../types';
+import {
+  X,
+  Radio,
+  Monitor,
+  Camera,
+  CameraOff,
+  Mic,
+  MicOff,
+  Users,
+  AlertTriangle,
+  ScreenShare,
+  Disc,
+} from 'lucide-react';
 import { socket } from '../services/socket';
-import { uploadRecording } from '../services/api';
 
 interface BroadcastStudioModalProps {
   onClose: () => void;
   language: Language;
+  currentUser?: User;
 }
 
-export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onClose, language }) => {
+export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
+  onClose,
+  language,
+  currentUser,
+}) => {
   const isArabic = language === 'ar';
+  const isUrdu = language === 'ur';
+
+  const professorName = currentUser?.name || 'Prof. MOHD FAIZAN BEG';
 
   const [isBroadcasting, setIsBroadcasting] = useState(false);
-  const [shareScreen, setShareScreen] = useState(true);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [shareWebcamPiP, setShareWebcamPiP] = useState(true);
   const [shareMic, setShareMic] = useState(true);
   const [broadcastTarget, setBroadcastTarget] = useState<'ALL' | 'SELECTED'>('ALL');
@@ -23,6 +42,15 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
   const [pipPos, setPipPos] = useState({ x: 40, y: 40 });
   const [isDragging, setIsDragging] = useState(false);
   const dragStart = useRef({ x: 0, y: 0, pipX: 0, pipY: 0 });
+
+  const [screenError, setScreenError] = useState<string | null>(null);
+  const [hasWebcam, setHasWebcam] = useState(false);
+
+  // Video refs
+  const screenVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const webcamStreamRef = useRef<MediaStream | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -36,16 +64,128 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
     }
   };
 
+  // Physical Screen Share
+  const stopScreenShare = () => {
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach((track) => track.stop());
+      screenStreamRef.current = null;
+    }
+    if (screenVideoRef.current) {
+      screenVideoRef.current.srcObject = null;
+    }
+    setIsScreenSharing(false);
+  };
+
+  const startScreenShare = async () => {
+    setScreenError(null);
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        if (typeof window !== 'undefined' && !window.isSecureContext) {
+          throw new Error(
+            `Chrome restricts physical screen capture over plain HTTP on LAN IP (${window.location.hostname}). To enable screen capture over LAN, open "chrome://flags/#unsafely-treat-insecure-origin-as-secure" in Chrome, add "http://${window.location.host}", enable it and relaunch Chrome. Or access via "http://localhost:5173" on the host machine.`
+          );
+        } else {
+          throw new Error('Screen sharing is not supported by your browser.');
+        }
+      }
+
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          displaySurface: 'monitor',
+        },
+        audio: shareMic,
+      });
+
+      screenStreamRef.current = stream;
+      setIsScreenSharing(true);
+
+      if (screenVideoRef.current) {
+        screenVideoRef.current.srcObject = stream;
+        screenVideoRef.current.play().catch(console.warn);
+      }
+
+      // Handle when user stops sharing via browser's native floating bar
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.onended = () => {
+          stopScreenShare();
+        };
+      }
+    } catch (err: any) {
+      if (err.name === 'NotAllowedError') {
+        // User dismissed the screen picker
+        console.log('Screen capture dismissed by user');
+      } else {
+        console.error('Screen sharing error:', err);
+        setScreenError(err.message || 'Failed to start screen capture');
+      }
+    }
+  };
+
+  const handleToggleScreenShare = () => {
+    if (isScreenSharing) {
+      stopScreenShare();
+    } else {
+      startScreenShare();
+    }
+  };
+
+  // Physical Webcam for PiP
+  useEffect(() => {
+    let activeStream: MediaStream | null = null;
+    if (shareWebcamPiP && navigator.mediaDevices?.getUserMedia) {
+      navigator.mediaDevices
+        .getUserMedia({ video: true, audio: false })
+        .then((s) => {
+          activeStream = s;
+          webcamStreamRef.current = s;
+          setHasWebcam(true);
+          if (pipVideoRef.current) {
+            pipVideoRef.current.srcObject = s;
+            pipVideoRef.current.play().catch(console.warn);
+          }
+        })
+        .catch((e) => {
+          console.log('Webcam not accessible, fallback to professor avatar:', e);
+          setHasWebcam(false);
+        });
+    } else {
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+        webcamStreamRef.current = null;
+      }
+      setHasWebcam(false);
+    }
+
+    return () => {
+      if (activeStream) {
+        activeStream.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, [shareWebcamPiP]);
+
+  // Clean up streams on unmount
+  useEffect(() => {
+    return () => {
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
+
   // Start Broadcast
   const handleStartBroadcast = () => {
     setIsBroadcasting(true);
     socket.emit('broadcast-start', {
       type: broadcastTarget,
       selectedCabins,
-      hasScreenShare: shareScreen,
+      hasScreenShare: isScreenSharing,
       hasWebcamPiP: shareWebcamPiP,
       hasAudio: shareMic,
-      title: 'Professor Tariq — Arabic Lab Broadcast',
+      title: `${professorName} — Arabic Lab Broadcast`,
     });
   };
 
@@ -55,20 +195,6 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
     if (isRecording) {
       setIsRecording(false);
       if (timerRef.current) clearInterval(timerRef.current);
-    }
-  };
-
-  // Record Broadcast
-  const handleToggleRecord = () => {
-    if (isRecording) {
-      setIsRecording(false);
-      if (timerRef.current) clearInterval(timerRef.current);
-    } else {
-      setIsRecording(true);
-      setRecSeconds(0);
-      timerRef.current = window.setInterval(() => {
-        setRecSeconds((p) => p + 1);
-      }, 1000);
     }
   };
 
@@ -98,7 +224,7 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
     };
   }, [isDragging]);
 
-  // Animate professor presentation screen
+  // Presentation Canvas (when physical screen is not actively shared)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -113,42 +239,55 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
       const w = canvas.width;
       const h = canvas.height;
 
-      // Dark background
+      // Dark background with emerald tone
       const grad = ctx.createLinearGradient(0, 0, w, h);
-      grad.addColorStop(0, '#061a14');
-      grad.addColorStop(1, '#020705');
+      grad.addColorStop(0, '#04130d');
+      grad.addColorStop(1, '#020604');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, w, h);
 
-      // Slide presentation header
+      // Slide presentation header card
       ctx.fillStyle = 'rgba(16, 185, 129, 0.12)';
-      ctx.fillRect(40, 40, w - 80, 80);
-      ctx.strokeStyle = 'rgba(16, 185, 129, 0.3)';
-      ctx.strokeRect(40, 40, w - 80, 80);
+      ctx.fillRect(40, 35, w - 80, 85);
+      ctx.strokeStyle = 'rgba(16, 185, 129, 0.35)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(40, 35, w - 80, 85);
 
       ctx.fillStyle = '#fde047';
-      ctx.font = 'bold 28px "Cairo", sans-serif';
+      ctx.font = 'bold 28px "Cairo", "Segoe UI", sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('شرح قواعد اللغة العربية — الأستاذ طارق المنصور', w / 2, 90);
+      ctx.fillText('شرح قواعد اللغة العربية — الأستاذ محمد فيضان بيك', w / 2, 75);
+
+      ctx.fillStyle = '#6ee7b7';
+      ctx.font = 'bold 15px "Inter", "Segoe UI", sans-serif';
+      ctx.fillText(`${professorName} • DEPARTMENT OF ARABIC — AMU`, w / 2, 104);
 
       // Slide content
       ctx.fillStyle = '#f1f7f4';
-      ctx.font = '22px "Amiri", serif';
+      ctx.font = '22px "Amiri", "Cairo", serif';
       ctx.textAlign = 'right';
       const arabicRules = [
-        '١. الجملة الاسمية تبدأ بالمبتدأ والخبر، وكلاهما مرفوع.',
+        '١. الجملة الاسمية تبدأ بالمبتدأ والخبر، وكلاهما مرفوع في الأصل.',
         '٢. الجملة الفعلية تتكون من فعل وفاعل ومفعول به عند التعدي.',
         '٣. علامات الإعراب الأصلية: الضمة للرفع، الفتحة للنصب، الكسرة للجر.',
+        '٤. الحوار والمحادثة المباشرة مع الطلاب عبر منظومة الصوت عالية الدقة.',
       ];
       arabicRules.forEach((rule, idx) => {
-        ctx.fillText(rule, w - 80, 180 + idx * 50);
+        // Bullet dot
+        ctx.fillStyle = '#10b981';
+        ctx.beginPath();
+        ctx.arc(w - 60, 185 + idx * 55, 6, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#f1f7f4';
+        ctx.fillText(rule, w - 80, 192 + idx * 55);
       });
 
       // Animated wave at bottom
       ctx.fillStyle = '#10b981';
-      for (let i = 0; i < 40; i++) {
-        const barH = Math.sin(elapsed * 3 + i * 0.3) * 20 + 25;
-        ctx.fillRect(100 + i * 16, h - 70, 8, -barH);
+      for (let i = 0; i < 48; i++) {
+        const barH = Math.sin(elapsed * 3 + i * 0.25) * 20 + 24;
+        ctx.fillRect(80 + i * 16, h - 65, 8, -barH);
       }
 
       animId = requestAnimationFrame(render);
@@ -156,7 +295,7 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
 
     render();
     return () => cancelAnimationFrame(animId);
-  }, []);
+  }, [professorName]);
 
   return (
     <div className="modal-backdrop">
@@ -169,11 +308,18 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
               <Radio className="w-5 h-5 animate-pulse" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white font-arabic">
-                {isArabic ? 'استوديو البث المباشر للفصل' : 'Classroom Broadcast Studio'}
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-bold text-white font-arabic">
+                  {isArabic ? 'استوديو البث المباشر للفصل' : 'Classroom Broadcast Studio'}
+                </h2>
+                <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-950/90 text-emerald-300 border border-emerald-500/30">
+                  {professorName}
+                </span>
+              </div>
               <p className="text-xs text-slate-400">
-                {isArabic ? 'بث الشاشة والصوت وصورة الكاميرا إلى كبائن الطلاب في نفس الوقت' : 'Broadcast professor screen, voice & PiP webcam across all 25 cabins'}
+                {isArabic
+                  ? 'بث الشاشة الحقيقية والصوت وصورة الكاميرا إلى كبائن الطلاب'
+                  : 'Broadcast professor live screen, voice & PiP webcam across all 25 cabins'}
               </p>
             </div>
           </div>
@@ -195,25 +341,40 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
         {/* Studio Controls Bar */}
         <div className="px-6 py-3 bg-emerald-950/40 border-b border-emerald-900/40 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-2">
+            {/* Screen Share Button */}
             <button
-              onClick={() => setShareScreen(!shareScreen)}
-              className={`btn-outline text-xs py-2 px-3 ${shareScreen ? 'text-emerald-300 border-emerald-500/50' : 'text-slate-500'}`}
+              onClick={handleToggleScreenShare}
+              className={`btn-outline text-xs py-2 px-3 transition-all flex items-center gap-1.5 ${
+                isScreenSharing
+                  ? 'bg-emerald-600 text-white border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.4)]'
+                  : 'text-emerald-300 border-emerald-500/40 hover:bg-emerald-900/40'
+              }`}
             >
               <Monitor className="w-4 h-4" />
-              <span>{isArabic ? 'مشاركة الشاشة' : 'Screen Share'}</span>
+              <span>
+                {isScreenSharing
+                  ? isArabic ? 'إيقاف مشاركة الشاشة' : 'Stop Screen Share'
+                  : isArabic ? 'مشاركة الشاشة الحقيقية' : 'Share Screen'}
+              </span>
             </button>
 
+            {/* PiP Camera Button */}
             <button
               onClick={() => setShareWebcamPiP(!shareWebcamPiP)}
-              className={`btn-outline text-xs py-2 px-3 ${shareWebcamPiP ? 'text-yellow-300 border-yellow-500/50' : 'text-slate-500'}`}
+              className={`btn-outline text-xs py-2 px-3 ${
+                shareWebcamPiP ? 'text-yellow-300 border-yellow-500/50' : 'text-slate-500'
+              }`}
             >
               {shareWebcamPiP ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
               <span>{isArabic ? 'كاميرا PiP دائرية' : 'Circular PiP Cam'}</span>
             </button>
 
+            {/* Microphone Button */}
             <button
               onClick={() => setShareMic(!shareMic)}
-              className={`btn-outline text-xs py-2 px-3 ${shareMic ? 'text-emerald-300 border-emerald-500/50' : 'text-slate-500'}`}
+              className={`btn-outline text-xs py-2 px-3 ${
+                shareMic ? 'text-emerald-300 border-emerald-500/50' : 'text-slate-500'
+              }`}
             >
               {shareMic ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
               <span>{isArabic ? 'الميكروفون' : 'Microphone'}</span>
@@ -255,6 +416,25 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
           </div>
         </div>
 
+        {/* Notice for Insecure Origin / HTTPS */}
+        {screenError && (
+          <div className="px-6 py-2.5 bg-amber-950/80 border-b border-amber-500/40 flex items-start gap-3 text-xs text-amber-200">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="font-bold text-amber-300">
+                Notice: Screen Sharing over LAN requires Secure Context (HTTPS or Chrome flag)
+              </p>
+              <p className="text-[11px] text-amber-200/90 leading-relaxed">{screenError}</p>
+            </div>
+            <button
+              onClick={() => setScreenError(null)}
+              className="text-amber-400 hover:text-white text-xs ml-auto font-bold"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Target Cabins Selector if Selected */}
         {broadcastTarget === 'SELECTED' && (
           <div className="px-6 py-2.5 bg-black/60 border-b border-emerald-900/30 flex items-center gap-2 overflow-x-auto">
@@ -284,43 +464,123 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
           </div>
         )}
 
-        {/* Live Presentation Preview & PiP */}
-        <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center min-h-[450px]">
-          <canvas
-            ref={canvasRef}
-            width={1280}
-            height={720}
-            className="w-full h-full max-h-[65vh] object-contain"
-          />
+        {/* Live Presentation Preview & PiP Container */}
+        <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center min-h-[460px]">
+          
+          {/* Active Screen Video Stream */}
+          {isScreenSharing ? (
+            <div className="relative w-full h-full flex items-center justify-center bg-slate-950">
+              <video
+                ref={screenVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full max-h-[65vh] object-contain shadow-2xl"
+              />
+              {/* Screen Stream Status Badge */}
+              <div className="absolute top-4 left-4 flex items-center gap-2 bg-emerald-950/90 backdrop-blur-md px-3 py-1.5 rounded-lg border border-emerald-500/40 text-xs text-emerald-300 font-mono shadow-lg">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                <span className="font-bold">LIVE SCREEN SHARING ACTIVE</span>
+              </div>
+              {/* Stop Sharing Button Overlay */}
+              <button
+                onClick={stopScreenShare}
+                className="absolute top-4 right-4 bg-red-600/90 hover:bg-red-500 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-lg border border-red-400/50 flex items-center gap-1.5 transition-all"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Stop Sharing</span>
+              </button>
+            </div>
+          ) : (
+            /* Slide Lecture Board Fallback when screen is not yet shared */
+            <div className="relative w-full h-full flex items-center justify-center">
+              <canvas
+                ref={canvasRef}
+                width={1280}
+                height={720}
+                className="w-full h-full max-h-[65vh] object-contain"
+              />
+
+              {/* Big Screen Share Button Overlay on Canvas */}
+              <div className="absolute top-4 right-4">
+                <button
+                  onClick={handleToggleScreenShare}
+                  className="btn-primary py-2 px-3.5 text-xs font-bold flex items-center gap-2 shadow-[0_0_20px_rgba(16,185,129,0.3)]"
+                >
+                  <ScreenShare className="w-4 h-4 text-emerald-200" />
+                  <span>{isArabic ? 'بدء مشاركة الشاشة الحقيقية' : 'Share Real Screen / Window'}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Draggable Circular PiP Professor Webcam */}
           {shareWebcamPiP && (
             <div
               onMouseDown={handleMouseDown}
               style={{ top: `${pipPos.y}px`, left: `${pipPos.x}px` }}
-              className="pip-webcam-overlay select-none"
-              title="Professor Circular Webcam PiP (Drag to position anywhere)"
+              className="pip-webcam-overlay select-none cursor-move z-20"
+              title="Professor Circular Webcam PiP (Drag anywhere on screen)"
             >
-              <div className="w-full h-full bg-gradient-to-tr from-amber-950 to-emerald-950 flex flex-col items-center justify-center p-2 text-center">
-                <div className="text-3xl mb-1">👨‍🏫</div>
-                <div className="text-[10px] font-bold text-amber-300">Dr. Tariq</div>
-                <div className="text-[8px] text-emerald-400 font-mono tracking-widest">PROFESSOR PiP</div>
-              </div>
+              {hasWebcam ? (
+                <div className="w-full h-full relative rounded-full overflow-hidden border-2 border-amber-400 shadow-[0_0_25px_rgba(251,191,36,0.5)]">
+                  <video
+                    ref={pipVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover rounded-full"
+                  />
+                  <div className="absolute bottom-0 inset-x-0 bg-slate-950/80 text-center py-0.5">
+                    <div className="text-[9px] font-bold text-amber-300 truncate px-1 font-mono">
+                      {professorName}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="w-full h-full rounded-full border-2 border-amber-400 bg-gradient-to-tr from-amber-950 to-emerald-950 flex flex-col items-center justify-center p-2 text-center shadow-[0_0_25px_rgba(251,191,36,0.5)]">
+                  <div className="text-2xl mb-0.5">👨‍🏫</div>
+                  <div className="text-[10px] font-bold text-amber-300 leading-tight truncate max-w-full px-1">
+                    {professorName}
+                  </div>
+                  <div className="text-[7px] text-emerald-400 font-mono tracking-widest mt-0.5">
+                    PROFESSOR PiP
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Stream Overlay Status */}
-          <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between bg-black/70 backdrop-blur-md px-4 py-2 rounded-xl border border-emerald-900/50 text-xs text-slate-300">
+          {/* Bottom Stream Status Overlay */}
+          <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between bg-black/80 backdrop-blur-md px-4 py-2 rounded-xl border border-emerald-900/50 text-xs text-slate-300 z-10">
             <div className="flex items-center gap-2">
-              <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
+              <span className={`w-2.5 h-2.5 rounded-full ${isBroadcasting ? 'bg-amber-400 animate-ping' : 'bg-emerald-400'}`} />
               <span className="font-semibold text-amber-300">
                 {isBroadcasting
-                  ? isArabic ? `جاري البث لـ (${broadcastTarget === 'ALL' ? '25 كابينة' : `${selectedCabins.length} كبائن`})` : `Broadcasting to ${broadcastTarget === 'ALL' ? 'All 25 Cabins' : `${selectedCabins.length} Selected Cabins`}`
-                  : isArabic ? 'جاهز للبث' : 'Broadcast Ready (Standby)'}
+                  ? isArabic
+                    ? `جاري البث المباشر لـ (${broadcastTarget === 'ALL' ? '25 كابينة' : `${selectedCabins.length} كبائن`})`
+                    : `Broadcasting Live to ${broadcastTarget === 'ALL' ? 'All 25 Cabins' : `${selectedCabins.length} Selected Cabins`}`
+                  : isArabic
+                  ? 'جاهز للبث (وضع الاستعداد)'
+                  : 'Broadcast Ready (Standby)'}
               </span>
             </div>
-            <div className="text-slate-400 text-[11px]">
-              {shareWebcamPiP ? 'Circular PiP Overlay Active' : 'PiP Disabled'} • LAN Multicast SFU
+            <div className="text-slate-400 text-[11px] flex items-center gap-3">
+              <span>
+                Screen:{' '}
+                <strong className={isScreenSharing ? 'text-emerald-400' : 'text-slate-400'}>
+                  {isScreenSharing ? 'Physical Screen Active' : 'Lecture Slide Board'}
+                </strong>
+              </span>
+              <span>•</span>
+              <span>
+                PiP:{' '}
+                <strong className="text-yellow-400">
+                  {shareWebcamPiP ? (hasWebcam ? 'Live Camera' : 'Avatar Mode') : 'Disabled'}
+                </strong>
+              </span>
+              <span>•</span>
+              <span className="font-mono text-emerald-400">AMU LAN SFU</span>
             </div>
           </div>
         </div>

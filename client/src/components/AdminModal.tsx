@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, MonitoringLog, Language } from '../types';
-import { X, Users, KeyRound, Power, ShieldAlert, Check, RefreshCw, Eye, Volume2, Camera } from 'lucide-react';
-import { fetchUsers, resetPassword, toggleUserActive, fetchAuditLogs } from '../services/api';
+import { X, Users, KeyRound, Power, ShieldAlert, Check, RefreshCw, Eye, Volume2, Camera, Download, Monitor, Laptop, Sparkles } from 'lucide-react';
+import { fetchUsers, resetPassword, toggleUserActive, fetchAuditLogs, SERVER_URL } from '../services/api';
 
 interface AdminModalProps {
   onClose: () => void;
@@ -10,7 +10,7 @@ interface AdminModalProps {
 
 export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => {
   const isArabic = language === 'ar';
-  const [activeTab, setActiveTab] = useState<'users' | 'audit'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'deployment'>('users');
   const [users, setUsers] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<MonitoringLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -109,6 +109,16 @@ export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => 
               }`}
             >
               {isArabic ? 'سجل التدقيق والمراقبة' : 'Surveillance Audit Trail'}
+            </button>
+            <button
+              onClick={() => setActiveTab('deployment')}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+                activeTab === 'deployment'
+                  ? 'bg-emerald-600 text-white shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              {isArabic ? 'تثبيت كبائن الطلاب (Setup)' : '📥 Cabin Setup & Download'}
             </button>
           </div>
 
@@ -283,6 +293,101 @@ export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => 
                     )}
                   </tbody>
                 </table>
+              </div>
+            </div>
+          )}
+
+          {/* Deployment Tab */}
+          {activeTab === 'deployment' && (
+            <div className="space-y-6">
+              {/* Highlight Banner: No Pen Drive Needed */}
+              <div className="p-4 rounded-xl bg-gradient-to-r from-emerald-950/80 to-slate-900 border border-emerald-500/40 shadow-lg">
+                <div className="flex items-start gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 flex items-center justify-center text-xl shrink-0">
+                    ⚡
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-emerald-300 font-heading">
+                      {isArabic
+                        ? 'تثبيت كبائن المختبر عبر شبكة LAN — بدون الحاجة إلى فلاش ميموري (Pen Drive)'
+                        : 'Deploy 25 Lab Cabins via LAN — No USB Pen Drive Needed'}
+                    </h3>
+                    <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                      {isArabic
+                        ? 'يمكن لجميع أجهزة كبائن الطلاب تحميل وتثبيت تطبيق المختبر مباشرة عبر الشبكة المحلية (LAN) بسرعة فائقة.'
+                        : 'Every student cabin PC can download and configure the Arabic Language Lab workstation client directly over the local network (LAN) in under 5 seconds.'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* 1-Click Installer Card */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Method 1: Instant 1-Click Setup Script */}
+                <div className="glass-panel p-5 border-emerald-500/30 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <Monitor className="w-5 h-5 text-emerald-400" />
+                    <div>
+                      <h4 className="text-sm font-bold text-white">1-Click Auto Setup (.bat)</h4>
+                      <p className="text-[11px] text-slate-400">Recommended for quick setup across all 25 PCs</p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    This setup script automatically connects the cabin PC to this server, creates a Windows Startup shortcut, and opens the Arabic Lab in full-screen Kiosk mode.
+                  </p>
+
+                  <a
+                    href={`${SERVER_URL}/api/download/cabin-setup`}
+                    download="Setup-ArabicLab-Cabin.bat"
+                    className="btn-primary w-full py-2.5 text-xs font-bold flex items-center justify-center gap-2"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Download Cabin Setup (.bat)</span>
+                  </a>
+                </div>
+
+                {/* Method 2: Electron Desktop App */}
+                <div className="glass-panel p-5 border-emerald-500/30 space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <Laptop className="w-5 h-5 text-amber-400" />
+                    <div>
+                      <h4 className="text-sm font-bold text-white">Electron Desktop App</h4>
+                      <p className="text-[11px] text-slate-400">Native Windows OS Background Surveillance</p>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    Runs the native desktop client with OS-level screen and audio capture hooks (<code className="text-emerald-400 font-mono text-[11px]">desktopCapturer</code>).
+                  </p>
+
+                  <div className="p-2.5 rounded bg-black/60 border border-emerald-900/60 font-mono text-[11px] text-emerald-300">
+                    <div># Run directly from terminal:</div>
+                    <div className="text-white font-bold">npm run electron</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3-Step Technician Guide */}
+              <div className="glass-panel p-5 border-emerald-500/30 space-y-3">
+                <h4 className="text-sm font-bold text-emerald-300 flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-amber-400" />
+                  <span>Lab Setup Guide for 25 Cabins (Step-by-Step):</span>
+                </h4>
+                <ol className="list-decimal list-inside space-y-2 text-xs text-slate-300">
+                  <li>
+                    <strong>Cabin PC par browser kholiye:</strong> Student PC par jakar browser me server URL kholiye:{' '}
+                    <code className="text-emerald-300 bg-black/40 px-1.5 py-0.5 rounded font-mono">
+                      {window.location.origin}
+                    </code>
+                  </li>
+                  <li>
+                    <strong>"Download 1-Click Cabin Setup" par click kijiye:</strong> File turant download ho jayegi.
+                  </li>
+                  <li>
+                    <strong>Downloaded file run kijiye:</strong> Ye computer par Arabic Lab ko Windows Startup me register kar degi. Ab computer on hote hi seedha Arabic Lab khulega!
+                  </li>
+                </ol>
               </div>
             </div>
           )}

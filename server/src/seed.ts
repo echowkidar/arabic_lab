@@ -8,16 +8,16 @@ async function main() {
   const profPassword = await bcrypt.hash('Prof@Lab2026', 10);
   await prisma.user.upsert({
     where: { username: 'professor' },
-    update: { passwordHash: profPassword, isActive: true },
+    update: { name: 'Prof. MOHD FAIZAN BEG', passwordHash: profPassword, isActive: true },
     create: {
-      name: 'Dr. Tariq Al-Mansoor (Professor)',
+      name: 'Prof. MOHD FAIZAN BEG',
       username: 'professor',
       passwordHash: profPassword,
       role: 'PROFESSOR',
       isActive: true,
     },
   });
-  console.log('✅ Professor created: professor / Prof@Lab2026');
+  console.log('✅ Professor created/updated: Prof. MOHD FAIZAN BEG (professor / Prof@Lab2026)');
 
   // Create Admin
   const adminPassword = await bcrypt.hash('Admin@Lab2026', 10);

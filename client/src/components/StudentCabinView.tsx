@@ -189,7 +189,7 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
             </div>
             <div>
               <h3 className="text-base font-bold text-amber-300 font-arabic">
-                {isArabic ? 'بث مباشر من الأستاذ طارق المنصور' : 'Live Broadcast from Professor'}
+                {isArabic ? 'بث مباشر من الأستاذ محمد فيضان بيك (Prof. MOHD FAIZAN BEG)' : 'Live Broadcast from Prof. MOHD FAIZAN BEG'}
               </h3>
               <p className="text-xs text-slate-300">
                 {isArabic ? 'الأستاذ يشارك شاشته وشرح الدرس مع جميع الكبائن' : 'Professor is sharing screen and lecture across all cabins'}

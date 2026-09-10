@@ -24,6 +24,15 @@ function createWindow() {
 
   mainWindow.loadURL(startUrl);
 
+  // Auto-register in Windows Startup on Boot (Restarts)
+  if (app.isPackaged || process.env.ENABLE_AUTO_START === 'true') {
+    app.setLoginItemSettings({
+      openAtLogin: true,
+      path: process.execPath,
+      args: ['--autostart'],
+    });
+  }
+
   // Silent screen capture handler for Arabic Lab
   ipcMain.handle('DESKTOP_CAPTURER_GET_SOURCES', async (_event, opts) => {
     try {
@@ -37,6 +46,19 @@ function createWindow() {
       console.error('Failed to get desktop sources:', e);
       return [];
     }
+  });
+
+  // Check & Toggle Windows Auto-Start
+  ipcMain.handle('GET_AUTO_START', () => {
+    return app.getLoginItemSettings().openAtLogin;
+  });
+
+  ipcMain.handle('SET_AUTO_START', (_event, enable) => {
+    app.setLoginItemSettings({
+      openAtLogin: Boolean(enable),
+      path: process.execPath,
+    });
+    return app.getLoginItemSettings().openAtLogin;
   });
 
   mainWindow.on('closed', () => {
