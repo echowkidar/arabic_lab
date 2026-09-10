@@ -106,11 +106,21 @@ function createWindow() {
         finalOpts.thumbnailSize = { width: 1920, height: 1080 };
       }
       const sources = await desktopCapturer.getSources(finalOpts);
-      return sources.map((s) => ({
-        id: s.id,
-        name: s.name,
-        thumbnail: s.thumbnail ? s.thumbnail.toDataURL() : null,
-      }));
+      return sources.map((s) => {
+        let thumbUrl = null;
+        if (s.thumbnail) {
+          try {
+            thumbUrl = 'data:image/jpeg;base64,' + s.thumbnail.toJPEG(80).toString('base64');
+          } catch (err) {
+            thumbUrl = s.thumbnail.toDataURL();
+          }
+        }
+        return {
+          id: s.id,
+          name: s.name,
+          thumbnail: thumbUrl,
+        };
+      });
     } catch (e) {
       console.error('Failed to get desktop sources:', e);
       return [];

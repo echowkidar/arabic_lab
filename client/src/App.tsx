@@ -532,18 +532,18 @@ export function App() {
       {/* Silent Monitor Modal */}
       {activeMonitorCabin && user && (
         <SilentMonitorModal
-          cabin={activeMonitorCabin}
+          cabin={cabins.find((c) => c.cabinNumber === activeMonitorCabin.cabinNumber) || activeMonitorCabin}
           currentUser={user}
           onClose={() => setActiveMonitorCabin(null)}
           onNextCabin={() => {
             const nextNum = (activeMonitorCabin.cabinNumber % 25) + 1;
-            const nextCabin = cabins.find((c) => c.cabinNumber === nextNum);
-            if (nextCabin) setActiveMonitorCabin(nextCabin);
+            const nextCabin = cabins.find((c) => c.cabinNumber === nextNum) || { ...activeMonitorCabin, cabinNumber: nextNum };
+            setActiveMonitorCabin(nextCabin);
           }}
           onPrevCabin={() => {
             const prevNum = activeMonitorCabin.cabinNumber === 1 ? 25 : activeMonitorCabin.cabinNumber - 1;
-            const prevCabin = cabins.find((c) => c.cabinNumber === prevNum);
-            if (prevCabin) setActiveMonitorCabin(prevCabin);
+            const prevCabin = cabins.find((c) => c.cabinNumber === prevNum) || { ...activeMonitorCabin, cabinNumber: prevNum };
+            setActiveMonitorCabin(prevCabin);
           }}
           onStartCall={(c, type) => handleStartCall(c, type)}
           language={language}

@@ -76,6 +76,56 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
   }, []);
 
+  // Live Screen & Audio Surveillance States
+  const [liveScreenData, setLiveScreenData] = useState<string | null>(cabin.screenData || null);
+  const [isCabinOnline, setIsCabinOnline] = useState<boolean>(cabin.online ?? false);
+  const [currentAudioLevel, setCurrentAudioLevel] = useState<number>(cabin.audioLevel || 0);
+
+  // Sync when cabin prop changes
+  useEffect(() => {
+    setLiveScreenData(cabin.screenData || null);
+    setIsCabinOnline(cabin.online ?? false);
+    setCurrentAudioLevel(cabin.audioLevel || 0);
+  }, [cabin.cabinNumber, cabin.screenData, cabin.online, cabin.audioLevel]);
+
+  // Real-Time Socket Stream Listeners for Active Single-Cabin View
+  useEffect(() => {
+    const handleScreenUpdate = (data: { cabinNumber: number; screenData: string }) => {
+      if (data.cabinNumber === cabin.cabinNumber) {
+        setLiveScreenData(data.screenData);
+        setIsCabinOnline(true);
+      }
+    };
+
+    const handleAudioLevel = (data: { cabinNumber: number; level: number }) => {
+      if (data.cabinNumber === cabin.cabinNumber) {
+        setCurrentAudioLevel(data.level);
+        setIsCabinOnline(true);
+      }
+    };
+
+    const handleCabinUpdated = (updated: any) => {
+      if (updated.cabinNumber === cabin.cabinNumber) {
+        setIsCabinOnline(Boolean(updated.online));
+        if (updated.screenData) {
+          setLiveScreenData(updated.screenData);
+        } else if (!updated.online) {
+          setLiveScreenData(null);
+        }
+      }
+    };
+
+    socket.on('cabin-screen-update', handleScreenUpdate);
+    socket.on('cabin-audio-level', handleAudioLevel);
+    socket.on('cabin-updated', handleCabinUpdated);
+
+    return () => {
+      socket.off('cabin-screen-update', handleScreenUpdate);
+      socket.off('cabin-audio-level', handleAudioLevel);
+      socket.off('cabin-updated', handleCabinUpdated);
+    };
+  }, [cabin.cabinNumber]);
+
   // Activate 25 FPS 1080p Surveillance on Single View Mount
   useEffect(() => {
     logAudit(cabin.cabinNumber, 'SCREEN_VIEW').catch(() => {});
@@ -93,7 +143,7 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
     };
   }, [cabin.cabinNumber]);
 
-  // Animate screen canvas
+  // Animate screen canvas fallback when offline
   useEffect(() => {
     let active = true;
     const canvas = canvasRef.current;
@@ -106,12 +156,12 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
 
     const render = () => {
       if (!active) return;
-      if (cabin.online && cabin.screenData) {
+      if (isCabinOnline && liveScreenData) {
         animId = requestAnimationFrame(render);
         return;
       }
       const elapsed = (Date.now() - startTime) / 1000;
-      if (cabin.online) {
+      if (isCabinOnline) {
         renderMockWorkstation(
           ctx,
           canvas.width,
@@ -119,7 +169,7 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
           cabin.cabinNumber,
           cabin.student?.name || `Student ${cabin.cabinNumber}`,
           elapsed,
-          cabin.audioLevel > 15
+          currentAudioLevel > 15
         );
       } else {
         renderOfflineWorkstation(
@@ -140,7 +190,7 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
       active = false;
       cancelAnimationFrame(animId);
     };
-  }, [cabin.cabinNumber, cabin.student?.name, cabin.audioLevel, cabin.online, isArabic]);
+  }, [cabin.cabinNumber, cabin.student?.name, currentAudioLevel, isCabinOnline, liveScreenData, isArabic]);
 
   // Toggle Webcam
   const handleToggleWebcam = () => {
@@ -418,9 +468,9 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
         {/* Main Monitor Display Area */}
         <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center min-h-[500px]">
           {/* Real-time screen canvas or real student desktop */}
-          {cabin.online && cabin.screenData ? (
+          {isCabinOnline && liveScreenData ? (
             <img
-              src={cabin.screenData}
+              src={liveScreenData}
               alt={`Cabin ${cabinPad} Real-Time Desktop Surveillance`}
               className={`w-full h-full object-contain shadow-2xl ${
                 isFullscreen ? 'max-h-screen' : 'max-h-[75vh]'
