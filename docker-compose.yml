@@ -35,10 +35,13 @@ services:
       - "${APP_PORT:-8080}:80"
     networks:
       - arabic_lab_net
+      - proxy
 
 networks:
   arabic_lab_net:
     driver: bridge
+  proxy:
+    external: true
 
 volumes:
   lab_db_data:
