@@ -54,7 +54,26 @@ export function App() {
   const loadLabData = async () => {
     try {
       const [c, r] = await Promise.all([fetchCabins(), fetchRecordings()]);
-      setCabins(c);
+      setCabins((prev) => {
+        if (!prev || prev.length === 0) return c;
+        return c.map((newCabin) => {
+          const existing = prev.find((p) => p.cabinNumber === newCabin.cabinNumber);
+          if (existing && (existing.online || existing.screenData || existing.inCall || existing.handRaised)) {
+            return {
+              ...newCabin,
+              online: existing.online ?? newCabin.online,
+              status: existing.status ?? newCabin.status,
+              socketId: existing.socketId || newCabin.socketId,
+              audioLevel: existing.audioLevel || newCabin.audioLevel,
+              inCall: existing.inCall || newCabin.inCall,
+              handRaised: existing.handRaised || newCabin.handRaised,
+              isScreenShared: existing.isScreenShared || newCabin.isScreenShared,
+              screenData: existing.screenData || newCabin.screenData,
+            };
+          }
+          return newCabin;
+        });
+      });
       setRecordings(r);
     } catch (err) {
       console.warn('Data load error:', err);
@@ -103,17 +122,72 @@ export function App() {
       );
     });
 
+    // Full initial snapshot of all 25 cabins on professor connect
+    socket.on('cabin-snapshot', (snapshot: Record<number, any>) => {
+      setCabins((prev) =>
+        prev.map((c) => {
+          const live = snapshot[c.cabinNumber];
+          if (live) {
+            const isOnline = Boolean(live.online);
+            return {
+              ...c,
+              online: isOnline,
+              status: !c.student?.isActive
+                ? 'DISABLED'
+                : isOnline
+                ? live.inCall
+                  ? 'IN_CALL'
+                  : 'ONLINE'
+                : 'OFFLINE',
+              socketId: live.socketId,
+              audioLevel: live.audioLevel || 0,
+              inCall: Boolean(live.inCall),
+              handRaised: Boolean(live.handRaised),
+              screenData: live.screenData || c.screenData,
+              isScreenShared: Boolean(live.isScreenShared),
+              isWebcamActive: Boolean(live.isWebcamActive),
+            };
+          }
+          return c;
+        })
+      );
+    });
+
     // Cabin Status Updates
     socket.on('cabin-updated', (updatedCabin: any) => {
       setCabins((prev) =>
-        prev.map((c) => (c.cabinNumber === updatedCabin.cabinNumber ? { ...c, ...updatedCabin } : c))
+        prev.map((c) => {
+          if (c.cabinNumber === updatedCabin.cabinNumber) {
+            const isOnline = Boolean(updatedCabin.online);
+            return {
+              ...c,
+              ...updatedCabin,
+              online: isOnline,
+              status: !c.student?.isActive
+                ? 'DISABLED'
+                : isOnline
+                ? updatedCabin.inCall
+                  ? 'IN_CALL'
+                  : 'ONLINE'
+                : 'OFFLINE',
+            };
+          }
+          return c;
+        })
       );
     });
 
     socket.on('cabin-audio-level', (data: { cabinNumber: number; level: number }) => {
       setCabins((prev) =>
         prev.map((c) =>
-          c.cabinNumber === data.cabinNumber ? { ...c, audioLevel: data.level } : c
+          c.cabinNumber === data.cabinNumber
+            ? {
+                ...c,
+                audioLevel: data.level,
+                online: true,
+                status: c.inCall ? 'IN_CALL' : 'ONLINE',
+              }
+            : c
         )
       );
     });
@@ -123,7 +197,13 @@ export function App() {
       setCabins((prev) =>
         prev.map((c) =>
           c.cabinNumber === data.cabinNumber
-            ? { ...c, screenData: data.screenData, isScreenShared: true }
+            ? {
+                ...c,
+                screenData: data.screenData,
+                isScreenShared: true,
+                online: true,
+                status: c.inCall ? 'IN_CALL' : 'ONLINE',
+              }
             : c
         )
       );
@@ -134,6 +214,7 @@ export function App() {
       socket.off('call-ended-by-peer');
       socket.off('hand-raised');
       socket.off('hand-lowered');
+      socket.off('cabin-snapshot');
       socket.off('cabin-updated');
       socket.off('cabin-audio-level');
       socket.off('cabin-screen-update');

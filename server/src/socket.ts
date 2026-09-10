@@ -89,7 +89,13 @@ export function setupSocketServer(io: SocketIOServer) {
     socket.on('audio-level-update', (data: { cabinNumber: number; level: number }) => {
       const { cabinNumber, level } = data;
       if (cabinStates[cabinNumber]) {
+        const wasOffline = !cabinStates[cabinNumber].online;
         cabinStates[cabinNumber].audioLevel = Math.min(100, Math.max(0, level));
+        if (wasOffline) {
+          cabinStates[cabinNumber].online = true;
+          cabinStates[cabinNumber].socketId = socket.id;
+          io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
+        }
         // Broadcast audio level to all professors
         io.to('professors').emit('cabin-audio-level', { cabinNumber, level });
       }
@@ -147,8 +153,14 @@ export function setupSocketServer(io: SocketIOServer) {
     socket.on('cabin-screen-frame', (data: { cabinNumber: number; screenData: string }) => {
       const { cabinNumber, screenData } = data;
       if (cabinStates[cabinNumber]) {
+        const wasOffline = !cabinStates[cabinNumber].online;
         cabinStates[cabinNumber].screenData = screenData;
         cabinStates[cabinNumber].isScreenShared = true;
+        cabinStates[cabinNumber].online = true;
+        cabinStates[cabinNumber].socketId = socket.id;
+        if (wasOffline) {
+          io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
+        }
         // Broadcast screen frame to all professors
         io.to('professors').emit('cabin-screen-update', { cabinNumber, screenData });
       }

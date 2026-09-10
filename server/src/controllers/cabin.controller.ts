@@ -52,6 +52,7 @@ export async function listCabins(req: AuthRequest, res: Response) {
         handRaised: live.handRaised,
         isScreenShared: live.isScreenShared,
         isWebcamActive: live.isWebcamActive,
+        screenData: live.screenData || null,
       });
     }
 

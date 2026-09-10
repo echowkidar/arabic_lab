@@ -106,9 +106,9 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
         {/* Status Pill */}
         <span
           className={`status-badge text-[10px] px-2 py-0.5 ${
-            cabin.status === 'ONLINE'
+            cabin.online || cabin.status === 'ONLINE'
               ? 'status-online'
-              : cabin.status === 'IN_CALL'
+              : cabin.inCall || cabin.status === 'IN_CALL'
               ? 'status-in-call'
               : cabin.status === 'DISABLED'
               ? 'status-disabled'
@@ -117,9 +117,9 @@ export const CabinCard: React.FC<CabinCardProps> = ({ cabin, onMonitor, onCall, 
         >
           <span className="pulse-dot" />
           <span>
-            {cabin.status === 'ONLINE'
+            {cabin.online || cabin.status === 'ONLINE'
               ? isArabic ? 'متصل' : 'Online'
-              : cabin.status === 'IN_CALL'
+              : cabin.inCall || cabin.status === 'IN_CALL'
               ? isArabic ? 'في مكالمة' : 'In Call'
               : cabin.status === 'DISABLED'
               ? isArabic ? 'معطل' : 'Disabled'
