@@ -12,6 +12,10 @@ import {
   AlertTriangle,
   ScreenShare,
   Disc,
+  Settings2,
+  ChevronDown,
+  RefreshCw,
+  Sliders,
 } from 'lucide-react';
 import { socket } from '../services/socket';
 
@@ -47,12 +51,28 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
   const [hasWebcam, setHasWebcam] = useState(false);
   const [screenImageSrc, setScreenImageSrc] = useState<string | null>(null);
 
-  // Video refs
+  // AV Devices State (Mic, Webcam & Audio Source Selection)
+  const [audioInputDevices, setAudioInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [videoInputDevices, setVideoInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>(() => {
+    return localStorage.getItem('arabic_lab_selected_mic') || '';
+  });
+  const [selectedCameraId, setSelectedCameraId] = useState<string>(() => {
+    return localStorage.getItem('arabic_lab_selected_camera') || '';
+  });
+  const [showDeviceSettings, setShowDeviceSettings] = useState(false);
+  const [micLiveLevel, setMicLiveLevel] = useState(0);
+
+  // Video and Audio refs
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const frameCaptureIntervalRef = useRef<number | null>(null);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const timerRef = useRef<number | null>(null);
@@ -221,12 +241,59 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
     }
   };
 
-  // Physical Webcam for PiP
+  // Enumerate AV devices (Microphones & Webcams)
+  const refreshDevices = async () => {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    try {
+      try {
+        const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+        tempStream.getTracks().forEach((t) => t.stop());
+      } catch (_) {
+        try {
+          const tempAudio = await navigator.mediaDevices.getUserMedia({ audio: true });
+          tempAudio.getTracks().forEach((t) => t.stop());
+        } catch (_) {}
+      }
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices.filter((d) => d.kind === 'audioinput');
+      const cams = devices.filter((d) => d.kind === 'videoinput');
+
+      setAudioInputDevices(mics);
+      setVideoInputDevices(cams);
+
+      if (mics.length > 0 && !selectedMicId) {
+        setSelectedMicId(mics[0].deviceId);
+      }
+      if (cams.length > 0 && !selectedCameraId) {
+        setSelectedCameraId(cams[0].deviceId);
+      }
+    } catch (e) {
+      console.warn('Device enumeration error:', e);
+    }
+  };
+
+  useEffect(() => {
+    refreshDevices();
+    if (navigator.mediaDevices?.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', refreshDevices);
+      return () => {
+        navigator.mediaDevices.removeEventListener('devicechange', refreshDevices);
+      };
+    }
+  }, []);
+
+  // Physical Webcam for PiP (supporting selectedCameraId)
   useEffect(() => {
     let activeStream: MediaStream | null = null;
     if (shareWebcamPiP && navigator.mediaDevices?.getUserMedia) {
+      const constraints: MediaStreamConstraints = {
+        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
+        audio: false,
+      };
+
       navigator.mediaDevices
-        .getUserMedia({ video: true, audio: false })
+        .getUserMedia(constraints)
         .then((s) => {
           activeStream = s;
           webcamStreamRef.current = s;
@@ -237,8 +304,19 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
           }
         })
         .catch((e) => {
-          console.log('Webcam not accessible, fallback to professor avatar:', e);
-          setHasWebcam(false);
+          console.log('Webcam with exact deviceId failed, fallback to default:', e);
+          navigator.mediaDevices
+            .getUserMedia({ video: true, audio: false })
+            .then((s) => {
+              activeStream = s;
+              webcamStreamRef.current = s;
+              setHasWebcam(true);
+              if (pipVideoRef.current) {
+                pipVideoRef.current.srcObject = s;
+                pipVideoRef.current.play().catch(console.warn);
+              }
+            })
+            .catch(() => setHasWebcam(false));
         });
     } else {
       if (webcamStreamRef.current) {
@@ -253,7 +331,74 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
         activeStream.getTracks().forEach((t) => t.stop());
       }
     };
-  }, [shareWebcamPiP]);
+  }, [shareWebcamPiP, selectedCameraId]);
+
+  // Physical Microphone & Live Input Level Meter (supporting selectedMicId)
+  useEffect(() => {
+    let activeMic: MediaStream | null = null;
+    if (shareMic && navigator.mediaDevices?.getUserMedia) {
+      const constraints: MediaStreamConstraints = {
+        audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true,
+        video: false,
+      };
+
+      navigator.mediaDevices
+        .getUserMedia(constraints)
+        .then((s) => {
+          activeMic = s;
+          micStreamRef.current = s;
+
+          try {
+            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+            if (AudioCtx) {
+              const audioCtx = new AudioCtx();
+              audioContextRef.current = audioCtx;
+              const source = audioCtx.createMediaStreamSource(s);
+              const analyser = audioCtx.createAnalyser();
+              analyser.fftSize = 64;
+              source.connect(analyser);
+              analyserRef.current = analyser;
+
+              const dataArray = new Uint8Array(analyser.frequencyBinCount);
+              const checkLevel = () => {
+                analyser.getByteFrequencyData(dataArray);
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                  sum += dataArray[i];
+                }
+                const avg = sum / dataArray.length;
+                setMicLiveLevel(Math.min(100, Math.round((avg / 128) * 100)));
+                animFrameRef.current = requestAnimationFrame(checkLevel);
+              };
+              checkLevel();
+            }
+          } catch (audioErr) {
+            console.warn('Audio analyser error:', audioErr);
+          }
+        })
+        .catch((e) => {
+          console.warn('Microphone capture failed:', e);
+        });
+    } else {
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
+      setMicLiveLevel(0);
+    }
+
+    return () => {
+      if (activeMic) {
+        activeMic.getTracks().forEach((t) => t.stop());
+      }
+      if (animFrameRef.current) {
+        cancelAnimationFrame(animFrameRef.current);
+      }
+      if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+        audioContextRef.current.close().catch(() => {});
+      }
+    };
+  }, [shareMic, selectedMicId]);
 
   // Clean up streams on unmount
   useEffect(() => {
@@ -266,6 +411,9 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
       }
       if (webcamStreamRef.current) {
         webcamStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
       }
     };
   }, []);
@@ -473,6 +621,21 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
               {shareMic ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
               <span>{isArabic ? 'الميكروفون' : 'Microphone'}</span>
             </button>
+
+            {/* AV Hardware Settings Selector Button */}
+            <button
+              onClick={() => setShowDeviceSettings(!showDeviceSettings)}
+              className={`btn-outline text-xs py-2 px-3 flex items-center gap-1.5 transition-all ${
+                showDeviceSettings
+                  ? 'bg-amber-950/80 text-amber-300 border-amber-500/60 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
+                  : 'text-slate-400 border-slate-700/80 hover:text-white hover:border-slate-500'
+              }`}
+              title="Select Microphone, Webcam, or Audio Input Devices"
+            >
+              <Settings2 className="w-4 h-4 text-amber-400" />
+              <span>{isArabic ? 'إعدادات الأجهزة (AV)' : 'AV Devices'}</span>
+              <ChevronDown className={`w-3.5 h-3.5 transition-transform ${showDeviceSettings ? 'rotate-180' : ''}`} />
+            </button>
           </div>
 
           <div className="flex items-center gap-3">
@@ -509,6 +672,118 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
             )}
           </div>
         </div>
+
+        {/* AV Hardware Settings Drawer (Microphone & Webcam Source Selector) */}
+        {showDeviceSettings && (
+          <div className="px-6 py-4 bg-slate-950/95 border-b border-amber-500/40 backdrop-blur-xl animate-in slide-in-from-top-2 duration-200">
+            <div className="flex items-center justify-between pb-3 mb-3 border-b border-emerald-900/40">
+              <div className="flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-amber-400" />
+                <h4 className="text-xs font-bold text-amber-300 font-mono uppercase tracking-wider">
+                  {isArabic ? 'إعدادات أجهزة الصوت والكاميرا (AV Devices)' : 'Audio & Video Hardware Selector'}
+                </h4>
+              </div>
+              <button
+                onClick={refreshDevices}
+                className="text-[11px] font-mono text-emerald-400 hover:text-emerald-200 flex items-center gap-1 bg-emerald-950/60 px-2.5 py-1 rounded border border-emerald-500/30 transition-all hover:bg-emerald-900/60"
+                title="Rescan connected USB mics & webcams"
+              >
+                <RefreshCw className="w-3 h-3 animate-spin-hover" />
+                <span>{isArabic ? 'إعادة فحص الأجهزة' : 'Re-scan Devices'}</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* 1. Microphone Source Selector */}
+              <div className="space-y-1.5 p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/20">
+                <label className="text-xs font-bold text-emerald-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Mic className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>{isArabic ? 'مصدر الميكروفون / الصوت:' : 'Microphone / Audio Source:'}</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    {audioInputDevices.length} {isArabic ? 'أجهزة مكتشفة' : 'found'}
+                  </span>
+                </label>
+                <select
+                  value={selectedMicId}
+                  onChange={(e) => {
+                    setSelectedMicId(e.target.value);
+                    localStorage.setItem('arabic_lab_selected_mic', e.target.value);
+                  }}
+                  className="w-full bg-slate-900 border border-emerald-500/40 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
+                >
+                  {audioInputDevices.length === 0 ? (
+                    <option value="">Default System Microphone</option>
+                  ) : (
+                    audioInputDevices.map((d, idx) => (
+                      <option key={d.deviceId || idx} value={d.deviceId}>
+                        {d.label || `Microphone ${idx + 1} (${d.deviceId.slice(0, 8)}...)`}
+                      </option>
+                    ))
+                  )}
+                </select>
+
+                {/* Live Mic Level Test Meter */}
+                <div className="space-y-1 pt-1">
+                  <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                    <span>Live Mic Input Level:</span>
+                    <span className={micLiveLevel > 10 ? 'text-emerald-400 font-bold' : 'text-slate-500'}>
+                      {micLiveLevel}%
+                    </span>
+                  </div>
+                  <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-75 rounded-full ${
+                        micLiveLevel > 70
+                          ? 'bg-gradient-to-r from-emerald-500 via-amber-400 to-red-500'
+                          : 'bg-emerald-400'
+                      }`}
+                      style={{ width: `${Math.max(2, micLiveLevel)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. Webcam Video Source Selector */}
+              <div className="space-y-1.5 p-3 rounded-xl bg-emerald-950/40 border border-emerald-500/20">
+                <label className="text-xs font-bold text-amber-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Camera className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{isArabic ? 'كاميرا الفيديو (PiP Webcam):' : 'Webcam / Video Source:'}</span>
+                  </span>
+                  <span className="text-[10px] font-mono text-slate-400">
+                    {videoInputDevices.length} {isArabic ? 'كاميرات مكتشفة' : 'found'}
+                  </span>
+                </label>
+                <select
+                  value={selectedCameraId}
+                  onChange={(e) => {
+                    setSelectedCameraId(e.target.value);
+                    localStorage.setItem('arabic_lab_selected_camera', e.target.value);
+                  }}
+                  className="w-full bg-slate-900 border border-emerald-500/40 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400 font-mono"
+                >
+                  {videoInputDevices.length === 0 ? (
+                    <option value="">Default Integrated Camera</option>
+                  ) : (
+                    videoInputDevices.map((d, idx) => (
+                      <option key={d.deviceId || idx} value={d.deviceId}>
+                        {d.label || `Camera ${idx + 1} (${d.deviceId.slice(0, 8)}...)`}
+                      </option>
+                    ))
+                  )}
+                </select>
+
+                <p className="text-[10px] text-slate-400 pt-1 leading-relaxed">
+                  {isArabic
+                    ? 'يمكن اختيار كاميرا USB الخارجية أو الكاميرا الافتراضية لعرض صورة الأستاذ.'
+                    : 'Select external USB camera or virtual cam for professor PiP video feed.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Notice for Insecure Origin / HTTPS */}
         {screenError && (
