@@ -127,11 +127,11 @@ app.delete('/api/recordings/:id', authenticateToken, requireRole('PROFESSOR', 'A
 app.get('/api/audit', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), auditController.listAuditLogs);
 app.post('/api/audit/log', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), auditController.createAuditLog);
 
-server.listen(PORT, () => {
+server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`
   ══════════════════════════════════════════════════════════════════
   🏛️  ARABIC LANGUAGE LAB MANAGEMENT SOFTWARE — BACKEND RUNNING
-  📡  API & WebRTC Server listening on port: ${PORT}
+  📡  API & WebRTC Server listening on: 0.0.0.0:${PORT} (LAN & Localhost)
   🔗  Health Endpoint: http://localhost:${PORT}/api/health
   ══════════════════════════════════════════════════════════════════
   `);
