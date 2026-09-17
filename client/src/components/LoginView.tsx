@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { User, Language } from '../types';
 import { login, SERVER_URL } from '../services/api';
 import { Lock, User as UserIcon, ArrowRight, Sparkles, Globe, Download, Monitor } from 'lucide-react';
+import { APP_VERSION } from '../constants/version';
 
 interface LoginViewProps {
   onLoginSuccess: (user: User, token: string) => void;
@@ -18,21 +19,21 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
   const [consent, setConsent] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [appVersion, setAppVersion] = useState<string>('');
+  const [appVersion, setAppVersion] = useState<string>(APP_VERSION);
   const [isElectron, setIsElectron] = useState(false);
 
   useEffect(() => {
+    const electronDetected = Boolean(
+      (window as any).electronAPI?.isElectron ||
+      (typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes('electron'))
+    );
+    setIsElectron(electronDetected);
+
     const electronAPI = (window as any).electronAPI;
-    if (electronAPI?.isElectron) {
-      setIsElectron(true);
-      if (electronAPI.getAppVersion) {
-        electronAPI.getAppVersion().then((v: string) => setAppVersion(v || '1.4.0')).catch(() => setAppVersion('1.4.0'));
-      } else {
-        setAppVersion('< 1.4.0');
-      }
-    } else {
-      setIsElectron(false);
-      setAppVersion('WEB');
+    if (electronAPI?.getAppVersion) {
+      electronAPI.getAppVersion().then((v: string) => {
+        if (v) setAppVersion(v);
+      }).catch(() => {});
     }
   }, []);
 
@@ -75,19 +76,21 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
 
           <div className="flex items-center gap-2">
             {/* Version Badge */}
-            {appVersion && (
-              <span
-                title={isElectron ? `Desktop EXE v${appVersion} — Arabic Language Lab Suite` : 'Running in Web Browser'}
-                className={`text-[10px] font-bold px-2 py-0.5 rounded font-mono flex items-center gap-1 cursor-help ${
-                  isElectron
-                    ? 'bg-amber-950/90 text-amber-300 border border-amber-500/40'
-                    : 'bg-blue-950/80 text-blue-300 border border-blue-500/40'
-                }`}
-              >
-                <Monitor className="w-2.5 h-2.5" />
-                {isElectron ? `EXE v${appVersion}` : 'WEB'}
-              </span>
-            )}
+            <span
+              title={
+                isElectron
+                  ? `Arabic Language Lab Suite v${appVersion} (Windows Desktop EXE)`
+                  : `Arabic Language Lab Suite v${APP_VERSION} (Web Browser)`
+              }
+              className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full font-mono flex items-center gap-1.5 cursor-help shadow-sm transition-all ${
+                isElectron
+                  ? 'bg-amber-950/90 text-amber-300 border border-amber-500/60'
+                  : 'bg-emerald-950/90 text-emerald-300 border border-emerald-500/50'
+              }`}
+            >
+              <Monitor className="w-3 h-3" />
+              <span>{isElectron ? `v${appVersion} • EXE` : `v${APP_VERSION} • WEB`}</span>
+            </span>
 
           <div className="flex items-center gap-1.5 bg-slate-900/90 px-2 py-1 rounded-lg border border-emerald-900/60 text-xs">
             <Globe className="w-3.5 h-3.5 text-emerald-400" />
@@ -257,8 +260,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
               <Download className="w-3.5 h-3.5 text-amber-400" />
               <span>
                 {isArabic
-                  ? '💻 مثبت البرنامج المكتبي (ArabicLab-Setup.exe)'
-                  : '💻 Download Setup (ArabicLab-Setup.exe)'}
+                  ? `💻 مثبت البرنامج المكتبي (ArabicLab-Setup.exe v${APP_VERSION})`
+                  : `💻 Download Setup (ArabicLab-Setup.exe v${APP_VERSION})`}
               </span>
             </a>
 
@@ -275,6 +278,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
                   : '⚡ Fast Web Kiosk (.bat)'}
               </span>
             </a>
+          </div>
+
+          {/* Suite Version Label */}
+          <div className="mt-3 text-center text-[10px] font-mono text-emerald-500/60">
+            AMU Department of Arabic • Lab Suite v{APP_VERSION}
           </div>
         </div>
       </div>
