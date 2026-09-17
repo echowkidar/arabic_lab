@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, Language } from '../types';
 import { login, SERVER_URL } from '../services/api';
-import { Lock, User as UserIcon, ArrowRight, Sparkles, Globe, Download } from 'lucide-react';
+import { Lock, User as UserIcon, ArrowRight, Sparkles, Globe, Download, Monitor } from 'lucide-react';
 
 interface LoginViewProps {
   onLoginSuccess: (user: User, token: string) => void;
@@ -18,6 +18,23 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
   const [consent, setConsent] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>('');
+  const [isElectron, setIsElectron] = useState(false);
+
+  useEffect(() => {
+    const electronAPI = (window as any).electronAPI;
+    if (electronAPI?.isElectron) {
+      setIsElectron(true);
+      if (electronAPI.getAppVersion) {
+        electronAPI.getAppVersion().then((v: string) => setAppVersion(v || '1.4.0')).catch(() => setAppVersion('1.4.0'));
+      } else {
+        setAppVersion('< 1.4.0');
+      }
+    } else {
+      setIsElectron(false);
+      setAppVersion('WEB');
+    }
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,9 +69,25 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
         
         {/* Top bar with Language Switcher */}
         <div className="flex items-center justify-between mb-6 pb-3 border-b border-emerald-900/40">
-          <span className="text-[11px] font-mono font-bold text-emerald-400 bg-emerald-950/90 px-2 py-0.5 rounded border border-emerald-500/30">
+          <span className="text-[11px] font-mono font-bold text-emerald-400 bg-emerald-950/90 px-2 py-0.5 rounded border border-emerald-500/30 flex items-center gap-1.5">
             AMU • ALIGARH MUSLIM UNIVERSITY
           </span>
+
+          <div className="flex items-center gap-2">
+            {/* Version Badge */}
+            {appVersion && (
+              <span
+                title={isElectron ? `Desktop EXE v${appVersion} — Arabic Language Lab Suite` : 'Running in Web Browser'}
+                className={`text-[10px] font-bold px-2 py-0.5 rounded font-mono flex items-center gap-1 cursor-help ${
+                  isElectron
+                    ? 'bg-amber-950/90 text-amber-300 border border-amber-500/40'
+                    : 'bg-blue-950/80 text-blue-300 border border-blue-500/40'
+                }`}
+              >
+                <Monitor className="w-2.5 h-2.5" />
+                {isElectron ? `EXE v${appVersion}` : 'WEB'}
+              </span>
+            )}
 
           <div className="flex items-center gap-1.5 bg-slate-900/90 px-2 py-1 rounded-lg border border-emerald-900/60 text-xs">
             <Globe className="w-3.5 h-3.5 text-emerald-400" />
@@ -68,7 +101,9 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
               <option value="ur" className="bg-slate-900 text-white">اردو / Hindi</option>
             </select>
           </div>
+          </div>
         </div>
+
 
         {/* Emblem & Title */}
         <div className="text-center mb-6">
