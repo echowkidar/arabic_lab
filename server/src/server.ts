@@ -72,6 +72,15 @@ app.get('/api/download/electron-installer', (_req, res) => {
                          files.find(f => f.toLowerCase().endsWith('.exe'));
         if (setupExe) {
           const fullPath = path.join(dir, setupExe);
+          try {
+            const stats = fs.statSync(fullPath);
+            if (stats.size < 1024 * 1024) {
+              console.warn(`⚠️ [Download] Candidate installer ${fullPath} is only ${stats.size} bytes (Git LFS pointer?), skipping.`);
+              continue;
+            }
+          } catch {
+            continue;
+          }
           console.log(`✅ Serving installer binary: ${fullPath}`);
           return res.download(fullPath, 'ArabicLab-Setup.exe');
         }
@@ -150,6 +159,15 @@ app.get('/api/download/setup', (_req, res) => {
           files.find(f => f.toLowerCase().endsWith('.exe'));
         if (setupExe) {
           const fullPath = path.join(dir, setupExe);
+          try {
+            const stats = fs.statSync(fullPath);
+            if (stats.size < 1024 * 1024) {
+              console.warn(`⚠️ [AutoUpdate] Candidate installer ${fullPath} is only ${stats.size} bytes (Git LFS pointer?), skipping.`);
+              continue;
+            }
+          } catch {
+            continue;
+          }
           console.log(`✅ [AutoUpdate] Serving update installer: ${fullPath}`);
           res.setHeader('Content-Disposition', 'attachment; filename="ArabicLab-Setup.exe"');
           res.setHeader('Content-Type', 'application/octet-stream');

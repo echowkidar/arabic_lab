@@ -67,13 +67,28 @@ function createWindow() {
   const isDev = process.env.NODE_ENV === 'development' && !app.isPackaged;
   const defaultServerUrl = process.env.LAB_URL || (isDev ? 'http://localhost:5173' : 'https://arabic.echowkidar.in');
 
-  mainWindow.loadURL(defaultServerUrl).catch(() => {
-    console.log('Primary domain not reachable, falling back to LAN IP: http://10.0.93.68:8080');
-    mainWindow.loadURL('http://10.0.93.68:8080').catch(() => {
-      console.log('Central server not reachable, falling back to local client bundle');
-      mainWindow.loadFile(path.join(__dirname, '../client/dist/index.html')).catch(console.error);
-    });
-  });
+  // Clear HTTP cache on startup so new server releases/assets load immediately without stale cache
+  mainWindow.webContents.session.clearCache().catch(() => {});
+
+  const loadWithRetry = async () => {
+    try {
+      await mainWindow.loadURL(defaultServerUrl, {
+        extraHeaders: 'pragma: no-cache\nCache-Control: no-cache\n'
+      });
+      console.log('✅ Successfully loaded server:', defaultServerUrl);
+    } catch (err) {
+      console.warn('Primary domain not reachable, trying LAN IP...', err);
+      try {
+        await mainWindow.loadURL('http://10.0.93.68:8080', {
+          extraHeaders: 'pragma: no-cache\nCache-Control: no-cache\n'
+        });
+      } catch {
+        console.log('Central server not reachable, falling back to local client bundle');
+        mainWindow.loadFile(path.join(__dirname, '../client/dist/index.html')).catch(console.error);
+      }
+    }
+  };
+  loadWithRetry();
 
   // Silent Background Auto-Update Check
   setTimeout(() => {
@@ -359,14 +374,25 @@ function downloadAndApplyUpdate(serverBaseUrl, downloadPath) {
       res.pipe(file);
       file.on('finish', () => {
         file.close(() => {
-          console.log('✅ ArabicLab update downloaded. Launching silent background installer...');
-          const child = spawn(tempExe, ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS'], {
-            detached: true,
-            stdio: 'ignore',
-          });
-          child.unref();
-          isQuitting = true;
-          app.quit();
+          try {
+            const stats = fs.statSync(tempExe);
+            if (stats.size < 10 * 1024 * 1024) {
+              console.warn(`⚠️ Update installer binary is too small (${stats.size} bytes), likely a corrupt download or Git LFS pointer. Aborting update.`);
+              fs.unlink(tempExe, () => {});
+              return;
+            }
+            console.log(`✅ ArabicLab update downloaded (${(stats.size / (1024 * 1024)).toFixed(1)} MB). Launching silent background installer...`);
+            const child = spawn(tempExe, ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CLOSEAPPLICATIONS'], {
+              detached: true,
+              stdio: 'ignore',
+            });
+            child.unref();
+            isQuitting = true;
+            app.quit();
+          } catch (err) {
+            console.error('Error verifying update file:', err);
+            fs.unlink(tempExe, () => {});
+          }
         });
       });
     }).on('error', (err) => {

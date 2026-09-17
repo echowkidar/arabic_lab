@@ -35,7 +35,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startupicon"; Description: "Automatically start Arabic Language Lab on Windows boot (Restarts)"; GroupDescription: "Surveillance & Auto-Start:"; Flags: checkedonce
 
 [Files]
-Source: "dist-electron\ArabicLab-win32-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist-electron\ArabicLab-win32-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "LICENSES.chromium.html"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
