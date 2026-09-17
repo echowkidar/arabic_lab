@@ -6,10 +6,11 @@ import {
 } from 'lucide-react';
 import { socket } from '../services/socket';
 import { AudioAnalyzer } from '../services/audioAnalyzer';
+import { BroadcastViewerModal } from './BroadcastViewerModal';
 
 interface StudentCabinViewProps {
   user: User;
-  onStartCall: (targetCabin: number, type: 'VIDEO' | 'AUDIO') => void;
+  onStartCall: (targetCabin: number | 'PROFESSOR', type: 'VIDEO' | 'AUDIO') => void;
   language: Language;
 }
 
@@ -29,7 +30,8 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
   const [selectedPeerCabin, setSelectedPeerCabin] = useState<number>(cabinNumber === 1 ? 2 : 1);
   const [activeExerciseTab, setActiveExerciseTab] = useState<'quran' | 'dialogue' | 'grammar'>('quran');
   const [broadcastActive, setBroadcastActive] = useState<boolean>(false);
-  const [_broadcastData, setBroadcastData] = useState<any>(null);
+  const [broadcastData, setBroadcastData] = useState<any>(null);
+  const [showBroadcastViewer, setShowBroadcastViewer] = useState<boolean>(false);
 
   // Physical Windows Hardware State
   const [isHardwareActive, setIsHardwareActive] = useState(false);
@@ -47,11 +49,13 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
     socket.on('incoming-broadcast', (data) => {
       setBroadcastActive(true);
       setBroadcastData(data);
+      setShowBroadcastViewer(true);
     });
 
     socket.on('broadcast-ended', () => {
       setBroadcastActive(false);
       setBroadcastData(null);
+      setShowBroadcastViewer(false);
     });
 
     // Auto-respond to silent monitor from professor
@@ -65,12 +69,64 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
       });
     });
 
+    // Silent Audio Stream from Student to Professor (Listen Button)
+    let audioRecorder: MediaRecorder | null = null;
+    const handleToggleSilentAudio = (data: { enabled: boolean }) => {
+      if (data.enabled && hardwareStream) {
+        try {
+          const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+            ? 'audio/webm;codecs=opus'
+            : 'audio/webm';
+          audioRecorder = new MediaRecorder(hardwareStream, { mimeType });
+          audioRecorder.ondataavailable = async (e) => {
+            if (e.data && e.data.size > 0) {
+              try {
+                const buf = await e.data.arrayBuffer();
+                let bin = '';
+                const b = new Uint8Array(buf);
+                for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+                socket.emit('silent-audio-chunk', { cabinNumber, chunk: btoa(bin) });
+              } catch (_) {}
+            }
+          };
+          audioRecorder.start(600);
+        } catch (_) {}
+      } else {
+        if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
+      }
+    };
+
+    // Silent Webcam frame streaming when Professor toggles webcam in Silent Monitor
+    let webcamInterval: any = null;
+    const handleSetWebcam = (data: { enabled: boolean }) => {
+      if (webcamInterval) clearInterval(webcamInterval);
+      if (data.enabled) {
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = 240;
+        offCanvas.height = 180;
+        const offCtx = offCanvas.getContext('2d');
+        webcamInterval = setInterval(() => {
+          if (webcamVideoRef.current && webcamVideoRef.current.videoWidth > 0 && offCtx) {
+            offCtx.drawImage(webcamVideoRef.current, 0, 0, offCanvas.width, offCanvas.height);
+            socket.emit('cabin-webcam-frame', { cabinNumber, webcamData: offCanvas.toDataURL('image/jpeg', 0.5) });
+          }
+        }, 300);
+      }
+    };
+
+    socket.on('toggle-silent-audio', handleToggleSilentAudio);
+    socket.on('set-webcam-enabled', handleSetWebcam);
+
     return () => {
       socket.off('incoming-broadcast');
       socket.off('broadcast-ended');
       socket.off('start-silent-stream-to-prof');
+      socket.off('toggle-silent-audio', handleToggleSilentAudio);
+      socket.off('set-webcam-enabled', handleSetWebcam);
+      if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
+      if (webcamInterval) clearInterval(webcamInterval);
     };
-  }, [cabinNumber]);
+  }, [cabinNumber, hardwareStream]);
 
   // Silent Background Desktop Screen Surveillance for Electron Cabin
   useEffect(() => {
@@ -259,18 +315,7 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
 
   // Call Professor
   const handleCallProfessor = () => {
-    socket.emit('call-user-request', {
-      fromRole: 'STUDENT',
-      fromName: user.name,
-      fromCabin: cabinNumber,
-      callType: 'VIDEO',
-      roomId: `prof-call-${cabinNumber}-${Date.now()}`,
-    });
-    alert(
-      isArabic
-        ? 'تم إرسال طلب اتصال مباشر للأستاذ'
-        : 'Direct call invitation sent to Professor'
-    );
+    onStartCall('PROFESSOR', 'VIDEO');
   };
 
   // Connect with Peer Cabin
@@ -298,10 +343,11 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
             </div>
           </div>
           <button
-            onClick={() => alert('Broadcast viewer active')}
-            className="btn-gold text-xs py-2 px-4"
+            onClick={() => setShowBroadcastViewer(true)}
+            className="btn-gold text-xs py-2 px-4 shadow-lg hover:scale-105 transition-all flex items-center gap-1.5"
           >
-            {isArabic ? 'مشاهدة البث المباشر' : 'Watch Live Broadcast'}
+            <Radio className="w-3.5 h-3.5 animate-pulse" />
+            <span>{isArabic ? 'مشاهدة البث المباشر' : 'Watch Live Broadcast'}</span>
           </button>
         </div>
       )}
@@ -664,6 +710,15 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Live Classroom Broadcast Theater Player */}
+      {broadcastActive && showBroadcastViewer && (
+        <BroadcastViewerModal
+          broadcastData={broadcastData}
+          onClose={() => setShowBroadcastViewer(false)}
+          language={language}
+        />
+      )}
     </div>
   );
 };

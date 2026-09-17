@@ -86,6 +86,44 @@ export function App() {
     }
   }, [user]);
 
+  // Web Audio chime synthesizer (zero external audio file dependencies)
+  const playChime = (type: 'ring' | 'alert') => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const now = ctx.currentTime;
+
+      if (type === 'ring') {
+        const osc1 = ctx.createOscillator();
+        const osc2 = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc1.frequency.value = 440;
+        osc2.frequency.value = 480;
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 1.2);
+        osc1.connect(gain);
+        osc2.connect(gain);
+        gain.connect(ctx.destination);
+        osc1.start(now);
+        osc2.start(now);
+        osc1.stop(now + 1.2);
+        osc2.stop(now + 1.2);
+      } else {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.frequency.setValueAtTime(587.33, now);
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.35);
+        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.6);
+      }
+    } catch (_) {}
+  };
+
   // Socket Event Subscriptions
   useEffect(() => {
     if (!user) return;
@@ -93,6 +131,16 @@ export function App() {
     // Incoming Call Receiver
     socket.on('incoming-call', (callData) => {
       setIncomingCall(callData);
+      playChime('ring');
+    });
+
+    socket.on('call-response-received', (data: { accepted: boolean; responderSocketId: string; roomId: string; responderName: string }) => {
+      if (data.accepted) {
+        setActiveCall((prev) => prev ? { ...prev, peerSocketId: data.responderSocketId } : null);
+      } else {
+        alert(`${data.responderName || 'User'} declined the call.`);
+        setActiveCall(null);
+      }
     });
 
     socket.on('call-ended-by-peer', () => {
@@ -102,22 +150,25 @@ export function App() {
 
     // Hand Raised Alert for Professor
     socket.on('hand-raised', (data) => {
+      const cabinNum = Number(data.cabinNumber);
+      playChime('alert');
       setRaisedHandsAlert((prev) => {
-        if (prev.some((h) => h.cabinNumber === data.cabinNumber)) return prev;
-        return [...prev, data];
+        if (prev.some((h) => Number(h.cabinNumber) === cabinNum)) return prev;
+        return [...prev, { ...data, cabinNumber: cabinNum }];
       });
       setCabins((prev) =>
         prev.map((c) =>
-          c.cabinNumber === data.cabinNumber ? { ...c, handRaised: true } : c
+          Number(c.cabinNumber) === cabinNum ? { ...c, handRaised: true } : c
         )
       );
     });
 
     socket.on('hand-lowered', (data) => {
-      setRaisedHandsAlert((prev) => prev.filter((h) => h.cabinNumber !== data.cabinNumber));
+      const cabinNum = Number(data.cabinNumber);
+      setRaisedHandsAlert((prev) => prev.filter((h) => Number(h.cabinNumber) !== cabinNum));
       setCabins((prev) =>
         prev.map((c) =>
-          c.cabinNumber === data.cabinNumber ? { ...c, handRaised: false } : c
+          Number(c.cabinNumber) === cabinNum ? { ...c, handRaised: false } : c
         )
       );
     });
@@ -278,14 +329,36 @@ export function App() {
   };
 
   // Call Handlers
-  const handleStartCall = (targetCabin: Cabin | number, type: 'VIDEO' | 'AUDIO') => {
-    const cabinNum = typeof targetCabin === 'number' ? targetCabin : targetCabin.cabinNumber;
-    const target = cabins.find((c) => c.cabinNumber === cabinNum);
+  const handleStartCall = (target: Cabin | number | 'PROFESSOR', type: 'VIDEO' | 'AUDIO') => {
+    if (target === 'PROFESSOR') {
+      const call: ActiveCall = {
+        roomId: `prof-call-${user?.cabinNumber || 1}-${Date.now()}`,
+        peerSocketId: 'professors',
+        peerName: 'Prof. MOHD FAIZAN BEG',
+        peerRole: 'PROFESSOR',
+        callType: type,
+        isCaller: true,
+      };
+
+      socket.emit('call-user-request', {
+        fromRole: 'STUDENT',
+        fromName: user?.name || `Cabin ${user?.cabinNumber || 1}`,
+        fromCabin: user?.cabinNumber || 1,
+        callType: type,
+        roomId: call.roomId,
+      });
+
+      setActiveCall(call);
+      return;
+    }
+
+    const cabinNum = typeof target === 'number' ? target : target.cabinNumber;
+    const targetCabin = cabins.find((c) => c.cabinNumber === cabinNum);
 
     const call: ActiveCall = {
       roomId: `room-c${cabinNum}-${Date.now()}`,
-      peerSocketId: target?.socketId || 'peer-socket',
-      peerName: target?.student?.name || `Cabin ${cabinNum}`,
+      peerSocketId: targetCabin?.socketId || 'peer-socket',
+      peerName: targetCabin?.student?.name || `Cabin ${cabinNum}`,
       peerCabin: cabinNum,
       peerRole: 'STUDENT',
       callType: type,

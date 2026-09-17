@@ -97,22 +97,72 @@ app.get('/api/download/electron-installer', (_req, res) => {
 });
 
 // --- DESKTOP APP AUTO-UPDATE MANIFEST ---
+// Version info is read from server/downloads/version.json
+// To release a new update: (1) build new .exe, (2) copy to server/downloads/, (3) bump version in version.json
 app.get('/api/app/version', (_req, res) => {
+  const candidateVersionFiles = [
+    path.resolve(process.cwd(), './downloads/version.json'),
+    path.resolve('/app/downloads/version.json'),
+  ];
+
+  for (const vFile of candidateVersionFiles) {
+    if (fs.existsSync(vFile)) {
+      try {
+        const raw = fs.readFileSync(vFile, 'utf-8');
+        const info = JSON.parse(raw);
+        console.log(`📋 [AutoUpdate] Serving version manifest: v${info.version} from ${vFile}`);
+        return res.json(info);
+      } catch (e) {
+        console.warn('[AutoUpdate] Failed to parse version.json:', e);
+      }
+    }
+  }
+
+  // Fallback: hardcoded version if version.json is missing
+  console.warn('[AutoUpdate] version.json not found, serving hardcoded fallback.');
   res.json({
     version: '1.3.0',
     downloadUrl: '/api/download/setup',
-    releaseDate: '2026-09-10',
+    releaseDate: '2026-09-17',
     name: 'Arabic Language Lab Suite',
     mandatory: false,
-    features: [
-      'Native 1080p HD Screen Surveillance',
-      'Zero-Freeze Background Stealth Surveillance',
-      'Admin PIN 123456 Protected Exit',
-      '25 FPS Real-Time Single View',
-      'Silent Tray Persistence on Close',
-      'Fullscreen Edge-to-Edge Monitor'
-    ]
   });
+});
+
+// --- DESKTOP APP AUTO-UPDATE INSTALLER DOWNLOAD ---
+// This is the endpoint the Electron app calls when it detects a newer version.
+// Place the latest ArabicLab-Setup.exe in server/downloads/ and bump version.json.
+app.get('/api/download/setup', (_req, res) => {
+  const candidateDirs = [
+    path.resolve(process.cwd(), './downloads'),
+    path.resolve('/app/downloads'),
+  ];
+
+  console.log('🔄 [AutoUpdate] Setup installer requested for auto-update...');
+
+  for (const dir of candidateDirs) {
+    if (fs.existsSync(dir)) {
+      try {
+        const files = fs.readdirSync(dir);
+        // Prefer exact name, fallback to any .exe
+        const setupExe =
+          files.find(f => f.toLowerCase() === 'arabiclab-setup.exe') ||
+          files.find(f => f.toLowerCase().endsWith('.exe'));
+        if (setupExe) {
+          const fullPath = path.join(dir, setupExe);
+          console.log(`✅ [AutoUpdate] Serving update installer: ${fullPath}`);
+          res.setHeader('Content-Disposition', 'attachment; filename="ArabicLab-Setup.exe"');
+          res.setHeader('Content-Type', 'application/octet-stream');
+          return res.download(fullPath, 'ArabicLab-Setup.exe');
+        }
+      } catch (e) {
+        console.warn(`[AutoUpdate] Error reading dir [${dir}]:`, e);
+      }
+    }
+  }
+
+  console.error('❌ [AutoUpdate] No installer found for auto-update!');
+  res.status(404).json({ error: 'Update installer not available on server.' });
 });
 
 // --- ELECTRON DESKTOP APPLICATION DOWNLOAD (.zip with ArabicLab.exe) ---

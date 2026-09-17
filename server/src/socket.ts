@@ -103,50 +103,71 @@ export function setupSocketServer(io: SocketIOServer) {
 
     // Raise / Lower Hand
     socket.on('raise-hand', (data: { cabinNumber: number; studentName?: string }) => {
-      const { cabinNumber, studentName } = data;
-      if (cabinStates[cabinNumber]) {
-        cabinStates[cabinNumber].handRaised = true;
-        io.to('professors').emit('hand-raised', {
-          cabinNumber,
-          studentName: studentName || cabinStates[cabinNumber].studentName,
-          timestamp: new Date().toISOString(),
-        });
-        io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
+      const num = Number(data.cabinNumber);
+      const studentName = data.studentName;
+      if (cabinStates[num]) {
+        cabinStates[num].handRaised = true;
+      }
+      console.log(`✋ Hand raised by Cabin ${num} (${studentName})`);
+      io.to('professors').emit('hand-raised', {
+        cabinNumber: num,
+        studentName: studentName || (cabinStates[num] ? cabinStates[num].studentName : `Cabin ${num}`),
+        timestamp: new Date().toISOString(),
+      });
+      if (cabinStates[num]) {
+        io.to('professors').emit('cabin-updated', cabinStates[num]);
       }
     });
 
     socket.on('lower-hand', (data: { cabinNumber: number }) => {
-      const { cabinNumber } = data;
-      if (cabinStates[cabinNumber]) {
-        cabinStates[cabinNumber].handRaised = false;
-        io.to('professors').emit('hand-lowered', { cabinNumber });
-        io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
+      const num = Number(data.cabinNumber);
+      if (cabinStates[num]) {
+        cabinStates[num].handRaised = false;
+        io.to('professors').emit('cabin-updated', cabinStates[num]);
       }
+      io.to('professors').emit('hand-lowered', { cabinNumber: num });
     });
 
     // Silent Monitoring Request (Professor -> Student)
     socket.on('request-silent-monitor', (data: { cabinNumber: number }) => {
-      const { cabinNumber } = data;
-      const cabin = cabinStates[cabinNumber];
+      const num = Number(data.cabinNumber);
+      const cabin = cabinStates[num];
       if (cabin && cabin.online && cabin.socketId) {
-        console.log(`👀 Professor ${socket.id} requested silent monitor of Cabin ${cabinNumber}`);
-        // Send to student to initiate WebRTC stream directly to this professor
+        console.log(`👀 Professor ${socket.id} requested silent monitor of Cabin ${num}`);
         io.to(cabin.socketId).emit('start-silent-stream-to-prof', {
           professorSocketId: socket.id,
-          cabinNumber,
+          cabinNumber: num,
         });
       }
     });
 
     // Stop Silent Monitoring
     socket.on('stop-silent-monitor', (data: { cabinNumber: number }) => {
-      const { cabinNumber } = data;
-      const cabin = cabinStates[cabinNumber];
+      const num = Number(data.cabinNumber);
+      const cabin = cabinStates[num];
       if (cabin && cabin.socketId) {
         io.to(cabin.socketId).emit('stop-silent-stream-to-prof', {
           professorSocketId: socket.id,
         });
       }
+    });
+
+    // Silent Audio Stream Toggle & Relay (Professor listening to Student Mic)
+    socket.on('request-silent-audio', (data: { cabinNumber: number; enabled: boolean }) => {
+      const num = Number(data.cabinNumber);
+      const cabin = cabinStates[num];
+      if (cabin && cabin.socketId) {
+        io.to(cabin.socketId).emit('toggle-silent-audio', { enabled: data.enabled, professorSocketId: socket.id });
+      }
+    });
+
+    socket.on('silent-audio-chunk', (data: { cabinNumber: number; chunk: string }) => {
+      io.to('professors').emit('incoming-silent-audio', data);
+    });
+
+    // Silent Webcam Frame Relay (Student sending live webcam frame in PiP)
+    socket.on('cabin-webcam-frame', (data: { cabinNumber: number; webcamData: string }) => {
+      io.to('professors').emit('cabin-webcam-update', data);
     });
 
     // Real-Time Student Desktop Screen Frame Update
@@ -194,8 +215,9 @@ export function setupSocketServer(io: SocketIOServer) {
 
     // Professor toggles Student Webcam Stream
     socket.on('toggle-student-webcam', (data: { cabinNumber: number; enabled: boolean }) => {
-      const { cabinNumber, enabled } = data;
-      const cabin = cabinStates[cabinNumber];
+      const num = Number(data.cabinNumber);
+      const enabled = data.enabled;
+      const cabin = cabinStates[num];
       if (cabin) {
         cabin.isWebcamActive = enabled;
         if (cabin.socketId) {
@@ -216,10 +238,28 @@ export function setupSocketServer(io: SocketIOServer) {
       roomId: string;
     }) => {
       const { fromRole, fromName, fromCabin, targetCabin, targetSocketId, callType, roomId } = data;
+      console.log(`📞 Call requested from ${fromRole} ${fromName} (Cabin: ${fromCabin}) to targetCabin: ${targetCabin}`);
+
+      // Case 1: Student calling Professor (targetCabin is not specified or fromRole is STUDENT)
+      if (fromRole === 'STUDENT' && !targetCabin) {
+        console.log(`🚨 Forwarding student call to all professors: ${fromName} (Cabin ${fromCabin})`);
+        io.to('professors').emit('incoming-call', {
+          fromSocketId: socket.id,
+          fromRole,
+          fromName,
+          fromCabin: fromCabin ? Number(fromCabin) : undefined,
+          callType,
+          roomId,
+        });
+        return;
+      }
+
+      // Case 2: Direct call to specific socket
       let recipientSocketId = targetSocketId;
 
-      if (!recipientSocketId && targetCabin && cabinStates[targetCabin]?.socketId) {
-        recipientSocketId = cabinStates[targetCabin].socketId!;
+      // Case 3: Call to a specific cabin
+      if (!recipientSocketId && targetCabin && cabinStates[Number(targetCabin)]?.socketId) {
+        recipientSocketId = cabinStates[Number(targetCabin)].socketId!;
       }
 
       if (recipientSocketId) {
@@ -227,10 +267,12 @@ export function setupSocketServer(io: SocketIOServer) {
           fromSocketId: socket.id,
           fromRole,
           fromName,
-          fromCabin,
+          fromCabin: fromCabin ? Number(fromCabin) : undefined,
           callType,
           roomId,
         });
+      } else {
+        console.warn(`Call target unreachable: targetCabin=${targetCabin}, targetSocketId=${targetSocketId}`);
       }
     });
 
@@ -251,9 +293,9 @@ export function setupSocketServer(io: SocketIOServer) {
       });
 
       if (accepted) {
-        if (responderCabin && cabinStates[responderCabin]) {
-          cabinStates[responderCabin].inCall = true;
-          io.to('professors').emit('cabin-updated', cabinStates[responderCabin]);
+        if (responderCabin && cabinStates[Number(responderCabin)]) {
+          cabinStates[Number(responderCabin)].inCall = true;
+          io.to('professors').emit('cabin-updated', cabinStates[Number(responderCabin)]);
         }
       }
     });
@@ -263,13 +305,15 @@ export function setupSocketServer(io: SocketIOServer) {
       if (targetSocketId) {
         io.to(targetSocketId).emit('call-ended-by-peer');
       }
-      if (cabinNumber && cabinStates[cabinNumber]) {
-        cabinStates[cabinNumber].inCall = false;
-        io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
+      if (cabinNumber && cabinStates[Number(cabinNumber)]) {
+        cabinStates[Number(cabinNumber)].inCall = false;
+        io.to('professors').emit('cabin-updated', cabinStates[Number(cabinNumber)]);
       }
+      // Also broadcast call ended to all professors and students in case socket ID was general
+      socket.broadcast.emit('call-ended-by-peer', { cabinNumber });
     });
 
-    // Classroom Broadcast (Professor -> All Cabins or Selected)
+    // Classroom Broadcast (Professor -> All Cabins or Selected Cabins)
     socket.on('broadcast-start', (data: {
       type: 'ALL' | 'SELECTED';
       selectedCabins?: number[];
@@ -278,15 +322,37 @@ export function setupSocketServer(io: SocketIOServer) {
       hasAudio: boolean;
       title: string;
     }) => {
-      console.log('📢 Professor started classroom broadcast');
-      io.to('students').emit('incoming-broadcast', {
-        professorSocketId: socket.id,
-        ...data,
-      });
+      console.log(`📢 Classroom broadcast started: ${data.title} (${data.type})`);
+      if (data.type === 'SELECTED' && data.selectedCabins && data.selectedCabins.length > 0) {
+        data.selectedCabins.forEach((cabNum) => {
+          io.to(`cabin-${cabNum}`).emit('incoming-broadcast', {
+            professorSocketId: socket.id,
+            ...data,
+          });
+        });
+      } else {
+        io.to('students').emit('incoming-broadcast', {
+          professorSocketId: socket.id,
+          ...data,
+        });
+      }
+    });
+
+    // Broadcast live video/screen frame streaming
+    socket.on('broadcast-frame', (data: {
+      screenFrame?: string | null;
+      webcamFrame?: string | null;
+    }) => {
+      socket.to('students').emit('incoming-broadcast-frame', data);
+    });
+
+    // Broadcast live audio chunks (base64 audio data or Web Audio buffers)
+    socket.on('broadcast-audio-chunk', (data: { audioChunk: string }) => {
+      socket.to('students').emit('incoming-broadcast-audio', data);
     });
 
     socket.on('broadcast-stop', () => {
-      console.log('📢 Professor stopped classroom broadcast');
+      console.log('📢 Classroom broadcast stopped');
       io.to('students').emit('broadcast-ended');
     });
 

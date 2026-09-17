@@ -1,0 +1,16 @@
+{
+  "version": "1.4.0",
+  "releaseDate": "2026-09-17",
+  "name": "Arabic Language Lab Suite",
+  "mandatory": false,
+  "downloadUrl": "/api/download/setup",
+  "changelog": [
+    "Full Two-Way Real WebRTC 1:1 Video/Audio Calling",
+    "In-Call Desktop Screen Sharing",
+    "Classroom Lecture Broadcast to All 25 Cabins",
+    "Live Microphone Audio Listening in Silent Monitor",
+    "Real Student Webcam PiP in Silent Monitor",
+    "Instant Hand-Raise Alert with Sound Chimes",
+    "Auto-Update System via Server API"
+  ]
+}

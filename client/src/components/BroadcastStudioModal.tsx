@@ -440,6 +440,82 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({
     }
   };
 
+  // Active Broadcast Frame & Audio Streaming Loop (Streams Professor Screen + Mic to all Student Cabins)
+  useEffect(() => {
+    if (!isBroadcasting) return;
+
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = 1280;
+    offscreenCanvas.height = 720;
+    const offCtx = offscreenCanvas.getContext('2d');
+
+    const pipCanvas = document.createElement('canvas');
+    pipCanvas.width = 320;
+    pipCanvas.height = 240;
+    const pipCtx = pipCanvas.getContext('2d');
+
+    const frameInterval = window.setInterval(() => {
+      let screenDataUrl: string | null = null;
+      let webcamDataUrl: string | null = null;
+
+      // 1. Screen frame
+      if (isScreenSharing && screenVideoRef.current && screenVideoRef.current.videoWidth > 0 && offCtx) {
+        offCtx.drawImage(screenVideoRef.current, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+        screenDataUrl = offscreenCanvas.toDataURL('image/jpeg', 0.65);
+      } else if (screenImageSrc) {
+        screenDataUrl = screenImageSrc;
+      } else if (canvasRef.current) {
+        screenDataUrl = canvasRef.current.toDataURL('image/jpeg', 0.65);
+      }
+
+      // 2. Webcam frame
+      if (shareWebcamPiP && pipVideoRef.current && pipVideoRef.current.videoWidth > 0 && pipCtx) {
+        pipCtx.drawImage(pipVideoRef.current, 0, 0, pipCanvas.width, pipCanvas.height);
+        webcamDataUrl = pipCanvas.toDataURL('image/jpeg', 0.55);
+      }
+
+      socket.emit('broadcast-frame', {
+        screenFrame: screenDataUrl,
+        webcamFrame: webcamDataUrl,
+      });
+    }, 200);
+
+    // 3. Audio chunk streaming via MediaRecorder
+    let mediaRecorder: MediaRecorder | null = null;
+    if (shareMic && micStreamRef.current) {
+      try {
+        const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+          ? 'audio/webm;codecs=opus'
+          : 'audio/webm';
+        mediaRecorder = new MediaRecorder(micStreamRef.current, { mimeType });
+        mediaRecorder.ondataavailable = async (e) => {
+          if (e.data && e.data.size > 0) {
+            try {
+              const buffer = await e.data.arrayBuffer();
+              let binary = '';
+              const bytes = new Uint8Array(buffer);
+              for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+              }
+              const base64Audio = btoa(binary);
+              socket.emit('broadcast-audio-chunk', { audioChunk: base64Audio });
+            } catch (_) {}
+          }
+        };
+        mediaRecorder.start(800);
+      } catch (recErr) {
+        console.warn('Broadcast MediaRecorder error:', recErr);
+      }
+    }
+
+    return () => {
+      clearInterval(frameInterval);
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+    };
+  }, [isBroadcasting, isScreenSharing, shareWebcamPiP, shareMic, screenImageSrc]);
+
   // PiP Dragging
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsDragging(true);

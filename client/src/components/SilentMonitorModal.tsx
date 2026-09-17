@@ -78,8 +78,10 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
 
   // Live Screen & Audio Surveillance States
   const [liveScreenData, setLiveScreenData] = useState<string | null>(cabin.screenData || null);
+  const [liveWebcamFrame, setLiveWebcamFrame] = useState<string | null>(null);
   const [isCabinOnline, setIsCabinOnline] = useState<boolean>(cabin.online ?? false);
   const [currentAudioLevel, setCurrentAudioLevel] = useState<number>(cabin.audioLevel || 0);
+  const monitorAudioCtxRef = useRef<AudioContext | null>(null);
 
   // Sync when cabin prop changes
   useEffect(() => {
@@ -94,6 +96,12 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
       if (data.cabinNumber === cabin.cabinNumber) {
         setLiveScreenData(data.screenData);
         setIsCabinOnline(true);
+      }
+    };
+
+    const handleWebcamUpdate = (data: { cabinNumber: number; webcamData: string }) => {
+      if (data.cabinNumber === cabin.cabinNumber) {
+        setLiveWebcamFrame(data.webcamData);
       }
     };
 
@@ -115,16 +123,64 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
       }
     };
 
+    // Play incoming audio chunks from student microphone through Professor speakers
+    const handleSilentAudio = (data: { cabinNumber: number; chunk: string }) => {
+      if (data.cabinNumber === cabin.cabinNumber && isAudioListening && data.chunk) {
+        try {
+          const binary = atob(data.chunk);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+          if (!monitorAudioCtxRef.current && AudioCtx) {
+            monitorAudioCtxRef.current = new AudioCtx();
+          }
+          if (monitorAudioCtxRef.current && monitorAudioCtxRef.current.state === 'suspended') {
+            monitorAudioCtxRef.current.resume();
+          }
+          if (monitorAudioCtxRef.current) {
+            monitorAudioCtxRef.current.decodeAudioData(
+              bytes.buffer.slice(0),
+              (buffer) => {
+                if (monitorAudioCtxRef.current) {
+                  const source = monitorAudioCtxRef.current.createBufferSource();
+                  source.buffer = buffer;
+                  source.connect(monitorAudioCtxRef.current.destination);
+                  source.start(0);
+                }
+              },
+              () => {}
+            );
+          }
+        } catch (_) {}
+      }
+    };
+
     socket.on('cabin-screen-update', handleScreenUpdate);
+    socket.on('cabin-webcam-update', handleWebcamUpdate);
     socket.on('cabin-audio-level', handleAudioLevel);
     socket.on('cabin-updated', handleCabinUpdated);
+    socket.on('incoming-silent-audio', handleSilentAudio);
 
     return () => {
       socket.off('cabin-screen-update', handleScreenUpdate);
+      socket.off('cabin-webcam-update', handleWebcamUpdate);
       socket.off('cabin-audio-level', handleAudioLevel);
       socket.off('cabin-updated', handleCabinUpdated);
+      socket.off('incoming-silent-audio', handleSilentAudio);
     };
-  }, [cabin.cabinNumber]);
+  }, [cabin.cabinNumber, isAudioListening]);
+
+  // Request / Stop Silent Audio from Student
+  useEffect(() => {
+    socket.emit('request-silent-audio', { cabinNumber: cabin.cabinNumber, enabled: isAudioListening });
+    return () => {
+      socket.emit('request-silent-audio', { cabinNumber: cabin.cabinNumber, enabled: false });
+      if (monitorAudioCtxRef.current && monitorAudioCtxRef.current.state !== 'closed') {
+        monitorAudioCtxRef.current.close().catch(() => {});
+        monitorAudioCtxRef.current = null;
+      }
+    };
+  }, [cabin.cabinNumber, isAudioListening]);
 
   // Activate 25 FPS 1080p Surveillance on Single View Mount
   useEffect(() => {
@@ -495,17 +551,25 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
               className="pip-webcam-overlay select-none"
               title="Moveable Student Webcam PiP (Drag to move)"
             >
-              <div className="w-full h-full relative bg-slate-900 flex items-center justify-center">
-                {/* Simulated / Real Webcam Video */}
-                <div className="w-full h-full bg-gradient-to-t from-emerald-950 to-slate-900 flex flex-col items-center justify-center p-2 text-center">
-                  <div className="text-3xl mb-1">👤</div>
-                  <div className="text-[10px] font-bold text-emerald-300 truncate max-w-[100px]">
-                    {cabin.student?.name}
+              <div className="w-full h-full relative bg-slate-900 flex items-center justify-center overflow-hidden">
+                {liveWebcamFrame ? (
+                  <img
+                    src={liveWebcamFrame}
+                    alt={`Cabin ${cabinPad} Webcam`}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  /* Fallback when webcam is warming up or inactive */
+                  <div className="w-full h-full bg-gradient-to-t from-emerald-950 to-slate-900 flex flex-col items-center justify-center p-2 text-center">
+                    <div className="text-3xl mb-1 animate-pulse">👤</div>
+                    <div className="text-[10px] font-bold text-emerald-300 truncate max-w-[100px]">
+                      {cabin.student?.name}
+                    </div>
+                    <div className="text-[8px] text-slate-400 uppercase tracking-widest">
+                      CABIN {cabinPad} CAM
+                    </div>
                   </div>
-                  <div className="text-[8px] text-slate-400 uppercase tracking-widest">
-                    CABIN {cabinPad} CAM
-                  </div>
-                </div>
+                )}
                 {/* PiP Active Indicator */}
                 <div className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse" />
               </div>
