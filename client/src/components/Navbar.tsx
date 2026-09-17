@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, Language } from '../types';
-import { Radio, Film, Users, LogOut, Globe, Sparkles } from 'lucide-react';
+import { Radio, Film, Users, LogOut, Globe, Sparkles, Monitor } from 'lucide-react';
 
 interface NavbarProps {
   user: User;
@@ -30,6 +30,28 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isArabic = language === 'ar';
   const isUrdu = language === 'ur';
 
+  // Detect EXE version (Electron) or show WEB for browser
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [isElectron, setIsElectron] = useState(false);
+
+  useEffect(() => {
+    const electronAPI = (window as any).electronAPI;
+    if (electronAPI?.isElectron) {
+      setIsElectron(true);
+      if (electronAPI.getAppVersion) {
+        electronAPI.getAppVersion().then((v: string) => {
+          setAppVersion(v || '1.4.0');
+        }).catch(() => setAppVersion('1.4.0'));
+      } else {
+        // Fallback if older EXE doesn't have getAppVersion yet
+        setAppVersion('< 1.4.0');
+      }
+    } else {
+      setIsElectron(false);
+      setAppVersion('WEB');
+    }
+  }, []);
+
   return (
     <header className="glass-panel-elevated mb-6 px-6 py-4 flex flex-wrap items-center justify-between gap-4 sticky top-4 z-40">
       {/* Brand & Logo with AMU University Tag */}
@@ -45,6 +67,20 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-950/90 text-emerald-300 border border-emerald-500/40 font-mono">
               AMU • 25 CABINS
             </span>
+            {/* Version Badge — EXE version vs WEB version */}
+            {appVersion && (
+              <span
+                title={isElectron ? `EXE Desktop App v${appVersion}` : 'Running in Web Browser'}
+                className={`text-[10px] font-bold px-2 py-0.5 rounded font-mono flex items-center gap-1 ${
+                  isElectron
+                    ? 'bg-amber-950/80 text-amber-300 border border-amber-500/40'
+                    : 'bg-blue-950/80 text-blue-300 border border-blue-500/40'
+                }`}
+              >
+                <Monitor className="w-2.5 h-2.5" />
+                {isElectron ? `EXE v${appVersion}` : 'WEB'}
+              </span>
+            )}
           </div>
           <p className="text-xs text-slate-300 font-sans">
             {isArabic

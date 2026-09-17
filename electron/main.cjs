@@ -140,6 +140,27 @@ function createWindow() {
     return app.getLoginItemSettings().openAtLogin;
   });
 
+  // Expose current EXE version to renderer page (for version badge in UI)
+  ipcMain.handle('GET_APP_VERSION', () => {
+    return APP_VERSION;
+  });
+
+  // Suppress native alert() dialogs in student Electron windows
+  // (prevents broadcast viewer open/close loop caused by alert popups)
+  // Must be injected AFTER page load (did-finish-load fires after each navigation)
+  const suppressAlerts = `
+    window.alert = function(msg) {
+      console.log('[Alert suppressed in ArabicLab Electron]:', msg);
+    };
+    window.confirm = function(msg) {
+      console.log('[Confirm suppressed]:', msg);
+      return true;
+    };
+  `;
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.webContents.executeJavaScript(suppressAlerts).catch(() => {});
+  });
+
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
       event.preventDefault();
