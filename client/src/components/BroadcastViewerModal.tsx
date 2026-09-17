@@ -21,8 +21,11 @@ export const BroadcastViewerModal: React.FC<BroadcastViewerModalProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [screenFrame, setScreenFrame] = useState<string | null>(null);
   const [webcamFrame, setWebcamFrame] = useState<string | null>(null);
+  const [audioUnlocked, setAudioUnlocked] = useState(false);
+  const [audioWaiting, setAudioWaiting] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const pendingAudioRef = useRef<ArrayBuffer[]>([]);
 
   // Toggle Fullscreen
   const handleToggleFullscreen = () => {
@@ -49,6 +52,41 @@ export const BroadcastViewerModal: React.FC<BroadcastViewerModalProps> = ({
     return () => document.removeEventListener('fullscreenchange', handleFsChange);
   }, []);
 
+  // Unlock AudioContext on first user interaction (browser autoplay policy)
+  const unlockAudio = () => {
+    if (audioUnlocked) return;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioCtx();
+        }
+        audioContextRef.current.resume().then(() => {
+          setAudioUnlocked(true);
+          setAudioWaiting(false);
+          // Play any queued audio
+          const queued = pendingAudioRef.current.splice(0);
+          queued.forEach((buf) => {
+            if (audioContextRef.current) {
+              audioContextRef.current.decodeAudioData(
+                buf,
+                (decoded) => {
+                  if (audioContextRef.current) {
+                    const src = audioContextRef.current.createBufferSource();
+                    src.buffer = decoded;
+                    src.connect(audioContextRef.current.destination);
+                    src.start(0);
+                  }
+                },
+                () => {}
+              );
+            }
+          });
+        });
+      }
+    } catch (_) {}
+  };
+
   // Listen for live broadcast frames and audio chunks from Professor
   useEffect(() => {
     const handleFrame = (data: { screenFrame?: string | null; webcamFrame?: string | null }) => {
@@ -70,16 +108,24 @@ export const BroadcastViewerModal: React.FC<BroadcastViewerModalProps> = ({
         for (let i = 0; i < binary.length; i++) {
           bytes[i] = binary.charCodeAt(i);
         }
+        const buf = bytes.buffer.slice(0);
+
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (!audioContextRef.current && AudioCtx) {
           audioContextRef.current = new AudioCtx();
         }
+
         if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-          audioContextRef.current.resume();
+          // Queue audio until user interacts
+          pendingAudioRef.current.push(buf);
+          setAudioWaiting(true);
+          return;
         }
-        if (audioContextRef.current) {
+
+        if (audioContextRef.current && audioContextRef.current.state === 'running') {
+          setAudioUnlocked(true);
           audioContextRef.current.decodeAudioData(
-            bytes.buffer.slice(0),
+            buf,
             (buffer) => {
               if (audioContextRef.current) {
                 const source = audioContextRef.current.createBufferSource();
@@ -109,7 +155,7 @@ export const BroadcastViewerModal: React.FC<BroadcastViewerModalProps> = ({
   }, [isMuted]);
 
   return (
-    <div className="modal-backdrop z-50">
+    <div className="modal-backdrop z-50" onClick={unlockAudio}>
       <div
         ref={containerRef}
         className={`glass-panel-elevated w-full max-w-6xl flex flex-col overflow-hidden relative border-2 border-amber-500/70 shadow-[0_0_60px_rgba(245,158,11,0.3)] bg-slate-950 ${
@@ -209,6 +255,22 @@ export const BroadcastViewerModal: React.FC<BroadcastViewerModalProps> = ({
               <div className="absolute bottom-1 left-2 right-2 bg-black/70 px-1.5 py-0.5 rounded flex items-center justify-between text-[9px] text-amber-300 font-mono font-bold">
                 <span>PROFESSOR CAM</span>
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+              </div>
+            </div>
+          )}
+
+          {/* Audio Unlock Overlay — appears if browser blocked autoplay */}
+          {audioWaiting && !isMuted && (
+            <div
+              className="absolute inset-0 flex items-center justify-center bg-black/60 z-20 cursor-pointer"
+              onClick={unlockAudio}
+            >
+              <div className="text-center p-6 rounded-2xl bg-slate-900/95 border border-amber-500/60 shadow-2xl max-w-xs">
+                <div className="text-3xl mb-3">🔊</div>
+                <h4 className="text-sm font-bold text-amber-300 mb-2">Click to Enable Professor Audio</h4>
+                <p className="text-xs text-slate-400">
+                  Browser requires a tap/click to start audio playback. Click anywhere to hear the professor.
+                </p>
               </div>
             </div>
           )}

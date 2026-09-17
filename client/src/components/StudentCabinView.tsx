@@ -32,6 +32,7 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
   const [broadcastActive, setBroadcastActive] = useState<boolean>(false);
   const [broadcastData, setBroadcastData] = useState<any>(null);
   const [showBroadcastViewer, setShowBroadcastViewer] = useState<boolean>(false);
+  const autoOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Physical Windows Hardware State
   const [isHardwareActive, setIsHardwareActive] = useState(false);
@@ -49,10 +50,21 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
     socket.on('incoming-broadcast', (data) => {
       setBroadcastActive(true);
       setBroadcastData(data);
+      // Auto-open viewer immediately so student doesn't miss frames
       setShowBroadcastViewer(true);
+
+      // Safety net: if viewer was closed/missed, force-open after 15 seconds
+      if (autoOpenTimerRef.current) clearTimeout(autoOpenTimerRef.current);
+      autoOpenTimerRef.current = setTimeout(() => {
+        setShowBroadcastViewer(true);
+      }, 15000);
     });
 
     socket.on('broadcast-ended', () => {
+      if (autoOpenTimerRef.current) {
+        clearTimeout(autoOpenTimerRef.current);
+        autoOpenTimerRef.current = null;
+      }
       setBroadcastActive(false);
       setBroadcastData(null);
       setShowBroadcastViewer(false);
@@ -125,6 +137,7 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
       socket.off('set-webcam-enabled', handleSetWebcam);
       if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
       if (webcamInterval) clearInterval(webcamInterval);
+      if (autoOpenTimerRef.current) clearTimeout(autoOpenTimerRef.current);
     };
   }, [cabinNumber, hardwareStream]);
 

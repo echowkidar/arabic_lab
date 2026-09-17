@@ -49,6 +49,9 @@ export function getConnectedCabinsState() {
   return cabinStates;
 }
 
+// Track active broadcast info per professor socket
+const activeBroadcasts = new Map<string, { type: 'ALL' | 'SELECTED'; selectedCabins: number[] }>();
+
 export function setupSocketServer(io: SocketIOServer) {
   console.log('⚡ WebRTC & Classroom Signaling Engine initialized');
 
@@ -66,22 +69,26 @@ export function setupSocketServer(io: SocketIOServer) {
         socket.emit('cabin-snapshot', cabinStates);
       }
 
-      if (role === 'STUDENT' && cabinNumber && cabinNumber >= 1 && cabinNumber <= 25) {
-        socket.join(`cabin-${cabinNumber}`);
+      if (role === 'STUDENT') {
         socket.join('students');
+        const cabNum = cabinNumber ? Number(cabinNumber) : undefined;
+        if (cabNum && cabNum >= 1 && cabNum <= 25) {
+          socket.join(`cabin-${cabNum}`);
+          cabinStates[cabNum] = {
+            ...cabinStates[cabNum],
+            online: true,
+            socketId: socket.id,
+            userId,
+            studentName: name,
+            lastActive: new Date(),
+          };
 
-        cabinStates[cabinNumber] = {
-          ...cabinStates[cabinNumber],
-          online: true,
-          socketId: socket.id,
-          userId,
-          studentName: name,
-          lastActive: new Date(),
-        };
-
-        // Notify professors of student presence
-        io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
-        console.log(`💻 Cabin ${cabinNumber} (${name}) registered online`);
+          // Notify professors of student presence
+          io.to('professors').emit('cabin-updated', cabinStates[cabNum]);
+          console.log(`💻 Cabin ${cabNum} (${name}) registered online`);
+        } else {
+          console.log(`💻 Student session registered: ${name} (socket: ${socket.id})`);
+        }
       }
     });
 
@@ -323,8 +330,12 @@ export function setupSocketServer(io: SocketIOServer) {
       title: string;
     }) => {
       console.log(`📢 Classroom broadcast started: ${data.title} (${data.type})`);
-      if (data.type === 'SELECTED' && data.selectedCabins && data.selectedCabins.length > 0) {
-        data.selectedCabins.forEach((cabNum) => {
+      const selectedCabins = data.selectedCabins || [];
+      // Store active broadcast info for this professor
+      activeBroadcasts.set(socket.id, { type: data.type, selectedCabins });
+
+      if (data.type === 'SELECTED' && selectedCabins.length > 0) {
+        selectedCabins.forEach((cabNum) => {
           io.to(`cabin-${cabNum}`).emit('incoming-broadcast', {
             professorSocketId: socket.id,
             ...data,
@@ -343,16 +354,31 @@ export function setupSocketServer(io: SocketIOServer) {
       screenFrame?: string | null;
       webcamFrame?: string | null;
     }) => {
-      socket.to('students').emit('incoming-broadcast-frame', data);
+      const broadcast = activeBroadcasts.get(socket.id);
+      if (broadcast && broadcast.type === 'SELECTED' && broadcast.selectedCabins.length > 0) {
+        broadcast.selectedCabins.forEach((cabNum) => {
+          io.to(`cabin-${cabNum}`).emit('incoming-broadcast-frame', data);
+        });
+      } else {
+        io.to('students').emit('incoming-broadcast-frame', data);
+      }
     });
 
     // Broadcast live audio chunks (base64 audio data or Web Audio buffers)
     socket.on('broadcast-audio-chunk', (data: { audioChunk: string }) => {
-      socket.to('students').emit('incoming-broadcast-audio', data);
+      const broadcast = activeBroadcasts.get(socket.id);
+      if (broadcast && broadcast.type === 'SELECTED' && broadcast.selectedCabins.length > 0) {
+        broadcast.selectedCabins.forEach((cabNum) => {
+          io.to(`cabin-${cabNum}`).emit('incoming-broadcast-audio', data);
+        });
+      } else {
+        io.to('students').emit('incoming-broadcast-audio', data);
+      }
     });
 
     socket.on('broadcast-stop', () => {
       console.log('📢 Classroom broadcast stopped');
+      activeBroadcasts.delete(socket.id);
       io.to('students').emit('broadcast-ended');
     });
 
@@ -388,6 +414,10 @@ export function setupSocketServer(io: SocketIOServer) {
 
     // Disconnect Handler
     socket.on('disconnect', () => {
+      // Clean up any active broadcast by this socket
+      if (activeBroadcasts.has(socket.id)) {
+        activeBroadcasts.delete(socket.id);
+      }
       const session = socketSessionMap.get(socket.id);
       if (session) {
         const { cabinNumber, name } = session;
