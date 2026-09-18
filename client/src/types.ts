@@ -82,4 +82,5 @@ export interface ActiveCall {
   peerRole: string;
   callType: 'VIDEO' | 'AUDIO';
   isCaller: boolean;
+  accepted?: boolean;
 }

@@ -388,14 +388,26 @@ export function setupSocketServer(io: SocketIOServer) {
       signal: any;
       type: 'offer' | 'answer' | 'candidate';
       streamPurpose: 'monitor' | 'call' | 'broadcast' | 'peer';
+      callId?: string;
     }) => {
-      const { targetSocketId, signal, type, streamPurpose } = data;
+      const { targetSocketId, signal, type, streamPurpose, callId } = data;
       if (targetSocketId) {
         io.to(targetSocketId).emit('webrtc-signal', {
           senderSocketId: socket.id,
           signal,
           type,
           streamPurpose,
+          callId,
+        });
+      }
+    });
+
+    // Readiness Handshake Relay: callee announces its PC + listener are live
+    socket.on('webrtc-ready', (data: { targetSocketId: string; callId: string }) => {
+      if (data.targetSocketId) {
+        io.to(data.targetSocketId).emit('webrtc-ready', {
+          senderSocketId: socket.id,
+          callId: data.callId,
         });
       }
     });

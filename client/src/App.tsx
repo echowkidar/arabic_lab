@@ -136,7 +136,7 @@ export function App() {
 
     socket.on('call-response-received', (data: { accepted: boolean; responderSocketId: string; roomId: string; responderName: string }) => {
       if (data.accepted) {
-        setActiveCall((prev) => prev ? { ...prev, peerSocketId: data.responderSocketId } : null);
+        setActiveCall((prev) => prev ? { ...prev, peerSocketId: data.responderSocketId, accepted: true } : null);
       } else {
         alert(`${data.responderName || 'User'} declined the call.`);
         setActiveCall(null);
@@ -333,7 +333,7 @@ export function App() {
     if (target === 'PROFESSOR') {
       const call: ActiveCall = {
         roomId: `prof-call-${user?.cabinNumber || 1}-${Date.now()}`,
-        peerSocketId: 'professors',
+        peerSocketId: '',
         peerName: 'Prof. MOHD FAIZAN BEG',
         peerRole: 'PROFESSOR',
         callType: type,
@@ -357,7 +357,7 @@ export function App() {
 
     const call: ActiveCall = {
       roomId: `room-c${cabinNum}-${Date.now()}`,
-      peerSocketId: targetCabin?.socketId || 'peer-socket',
+      peerSocketId: '',
       peerName: targetCabin?.student?.name || `Cabin ${cabinNum}`,
       peerCabin: cabinNum,
       peerRole: 'STUDENT',

@@ -28,6 +28,11 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
   const screenStreamRef = useRef<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const peerSocketIdRef = useRef<string>(call.peerSocketId);
+  const localStreamReadyRef = useRef<(() => void) | null>(null);
+  const localStreamPromiseRef = useRef<Promise<void>>(Promise.resolve());
+  const offerSentRef = useRef(false);
+  const acceptedRef = useRef(false);
+  const callIdRef = useRef(call.roomId);
 
   // Keep peerSocketIdRef updated if call prop updates
   useEffect(() => {
@@ -37,6 +42,12 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
   // WebRTC Setup & Negotiation
   useEffect(() => {
     let active = true;
+
+    // Resolved when local mic/cam tracks are acquired and attached to the PC
+    localStreamPromiseRef.current = new Promise<void>((resolve) => {
+      localStreamReadyRef.current = resolve;
+    });
+    callIdRef.current = call.roomId;
 
     const configuration: RTCConfiguration = {
       iceServers: [
@@ -85,6 +96,7 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
           signal: event.candidate,
           type: 'candidate',
           streamPurpose: 'call',
+          callId: callIdRef.current,
         });
       }
     };
@@ -112,24 +124,12 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
           pc.addTrack(track, stream);
         });
 
-        // If this party initiated the call, create and send Offer
-        if (call.isCaller && peerSocketIdRef.current && peerSocketIdRef.current !== 'professors') {
-          try {
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket.emit('webrtc-signal', {
-              targetSocketId: peerSocketIdRef.current,
-              signal: offer,
-              type: 'offer',
-              streamPurpose: 'call',
-            });
-          } catch (e) {
-            console.error('Error creating WebRTC offer:', e);
-          }
-        }
+        // Local media ready — the caller's offer creation may now proceed
+        localStreamReadyRef.current?.();
       })
       .catch((err) => {
         console.warn('Physical camera/mic capture warning:', err);
+        localStreamReadyRef.current?.();
       });
 
     // Signaling listener for incoming Offer / Answer / ICE Candidates
@@ -138,8 +138,10 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
       signal: any;
       type: 'offer' | 'answer' | 'candidate';
       streamPurpose: string;
+      callId?: string;
     }) => {
       if (data.streamPurpose !== 'call') return;
+      if (data.callId !== callIdRef.current) return; // Ignore stale signals from other calls
       peerSocketIdRef.current = data.senderSocketId;
 
       try {
@@ -153,12 +155,13 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
             signal: answer,
             type: 'answer',
             streamPurpose: 'call',
+            callId: callIdRef.current,
           });
         } else if (data.type === 'answer') {
           console.log('📥 Received WebRTC Answer from peer');
           await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
         } else if (data.type === 'candidate') {
-          if (data.signal) {
+          if (data.signal && data.callId === callIdRef.current) { // Ignore stale candidates
             await pc.addIceCandidate(new RTCIceCandidate(data.signal));
           }
         }
@@ -169,9 +172,23 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
 
     socket.on('webrtc-signal', handleSignal);
 
+    // Callee: PC created + signaling listener registered — NOW announce readiness
+    if (!call.isCaller && peerSocketIdRef.current) {
+      socket.emit('webrtc-ready', { callId: call.roomId, targetSocketId: peerSocketIdRef.current });
+    }
+
+    // Caller: offer only after callee's PC + listener are live
+    const handleWebrtcReady = (data: { senderSocketId: string; callId: string }) => {
+      if (data.callId !== callIdRef.current) return; // Ignore stale ready from other calls
+      peerSocketIdRef.current = data.senderSocketId;
+      maybeSendOffer();
+    };
+    socket.on('webrtc-ready', handleWebrtcReady);
+
     return () => {
       active = false;
       socket.off('webrtc-signal', handleSignal);
+      socket.off('webrtc-ready', handleWebrtcReady);
 
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -185,6 +202,45 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
       }
     };
   }, [call.callType, call.isCaller]);
+
+  // Single offer path: guarded, acceptance- and readiness-gated
+  const maybeSendOffer = async () => {
+    if (!call.isCaller || offerSentRef.current) return;
+    if (!acceptedRef.current) return; // Never offer before the callee accepted
+    const target = peerSocketIdRef.current;
+    if (!target || target === 'professors' || target === 'peer-socket') return; // No placeholder targets
+    offerSentRef.current = true;
+    try {
+      await localStreamPromiseRef.current; // Tracks must be attached before createOffer()
+      const pc = pcRef.current;
+      if (!pc || pc.signalingState === 'closed') {
+        offerSentRef.current = false;
+        return;
+      }
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('webrtc-signal', {
+        targetSocketId: target,
+        signal: offer,
+        type: 'offer',
+        streamPurpose: 'call',
+        callId: callIdRef.current,
+      });
+    } catch (e) {
+      console.error('Error creating WebRTC offer:', e);
+      offerSentRef.current = false; // Controlled retry allowed on failure
+    }
+  };
+
+  // Gate the offer on the callee's acceptance (fires alongside webrtc-ready,
+  // whichever arrives last triggers the offer)
+  useEffect(() => {
+    acceptedRef.current = !!call.accepted;
+    if (call.isCaller && call.accepted) {
+      maybeSendOffer();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [call.accepted]);
 
   // Toggle Mute
   const handleToggleMute = () => {
