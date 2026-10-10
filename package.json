@@ -14,7 +14,9 @@
     "start": "npm --prefix server start",
     "seed": "npm --prefix server run seed",
     "electron": "electron electron/main.cjs",
-    "dist:win": "electron-builder --win"
+    "pack:win": "npm run build:client && electron-builder --win --ia32 --dir",
+    "build:installer": "C:\\Users\\salar\\AppData\\Local\\Programs\\INNOSE~1\\ISCC.exe installer.iss",
+    "dist:win": "npm run pack:win && npm run build:installer"
   },
   "build": {
     "appId": "com.amu.arabiclab",
@@ -46,7 +48,7 @@
   "author": "Antigravity AI",
   "license": "ISC",
   "devDependencies": {
-    "electron": "^41.7.1",
+    "electron": "^22.3.27",
     "electron-builder": "^26.16.1"
   }
 }

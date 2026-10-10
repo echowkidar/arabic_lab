@@ -2,7 +2,7 @@
 ; Creates a Single Standalone Setup.exe Installer
 
 #define MyAppName "Arabic Language Lab"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.5.1"
 #define MyAppPublisher "Department of Arabic, AMU"
 #define MyAppURL "https://arabic.echowkidar.in"
 #define MyAppExeName "ArabicLab.exe"
@@ -25,7 +25,7 @@ LZMADictionarySize=1048576
 LZMAUseSeparateProcess=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
-ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=force
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -35,7 +35,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Name: "startupicon"; Description: "Automatically start Arabic Language Lab on Windows boot (Restarts)"; GroupDescription: "Surveillance & Auto-Start:"; Flags: checkedonce
 
 [Files]
-Source: "dist-electron\ArabicLab-win32-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "LICENSES.chromium.html"
+Source: "dist-electron\win-ia32-unpacked\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "LICENSES.chromium.html"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

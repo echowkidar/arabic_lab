@@ -9,5 +9,8 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  build: {
+    target: ['chrome108', 'es2020'],
+  },
 })
 

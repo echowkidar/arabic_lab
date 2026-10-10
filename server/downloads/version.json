@@ -1,16 +1,15 @@
 {
-  "version": "1.5.0",
-  "releaseDate": "2026-09-17",
+  "version": "1.5.1",
+  "releaseDate": "2026-10-10",
   "name": "Arabic Language Lab Suite",
   "mandatory": false,
   "downloadUrl": "/api/download/setup",
   "changelog": [
+    "Universal 32-bit & 64-bit Windows Compatibility (Windows 7 / 8 / 10 / 11)",
+    "Fixed 'not a valid Win32 application' error on Windows 7 systems",
+    "Lightweight runtime footprint with reduced RAM and CPU usage",
     "Full Two-Way Real WebRTC 1:1 Video/Audio Calling",
-    "In-Call Desktop Screen Sharing",
-    "Classroom Lecture Broadcast to All 25 Cabins",
-    "Live Microphone Audio Listening in Silent Monitor",
-    "Real Student Webcam PiP in Silent Monitor",
-    "Instant Hand-Raise Alert with Sound Chimes",
-    "Auto-Update System via Server API"
+    "In-Call Desktop Screen Sharing & Live Microphone Monitoring",
+    "Classroom Lecture Broadcast to All 25 Cabins"
   ]
 }
