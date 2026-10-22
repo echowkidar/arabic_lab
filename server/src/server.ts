@@ -15,6 +15,7 @@ import * as cabinController from './controllers/cabin.controller.js';
 import * as userController from './controllers/user.controller.js';
 import * as recordingController from './controllers/recording.controller.js';
 import * as auditController from './controllers/audit.controller.js';
+import * as mediaController from './controllers/media.controller.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -46,6 +47,9 @@ app.use('/uploads/recordings', express.static(uploadDir));
 
 const downloadsDir = path.resolve(process.cwd(), './downloads');
 app.use('/downloads', express.static(downloadsDir));
+
+const mediaDir = path.resolve(process.cwd(), process.env.MEDIA_DIR || './uploads/media');
+app.use('/uploads/media', express.static(mediaDir));
 
 // Health Check
 app.get('/api/health', (_req, res) => {
@@ -297,6 +301,11 @@ app.delete('/api/recordings/:id', authenticateToken, requireRole('PROFESSOR', 'A
 // --- AUDIT LOG ROUTES ---
 app.get('/api/audit', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), auditController.listAuditLogs);
 app.post('/api/audit/log', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), auditController.createAuditLog);
+
+// --- PRACTICE MEDIA ROUTES (Professor pushes audio/video drills to students) ---
+app.post('/api/media/upload', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), mediaController.uploadMediaMiddleware, mediaController.uploadMedia);
+app.get('/api/media', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), mediaController.listMedia);
+app.delete('/api/media', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), mediaController.deleteMedia);
 
 server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`

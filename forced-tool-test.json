@@ -1,0 +1,35 @@
+﻿{
+  "model": "cfp/zai-org/glm-5.2",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the test_tool now."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "test_tool",
+        "description": "Test native function calling.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": ["message"]
+        }
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "function",
+    "function": {
+      "name": "test_tool"
+    }
+  },
+  "stream": false,
+  "max_tokens": 200
+}

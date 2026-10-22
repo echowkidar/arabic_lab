@@ -5,18 +5,27 @@ const SOCKET_URL = SERVER_URL || (typeof window !== 'undefined' ? window.locatio
 
 let activeUserSession: { id: string; role: string; cabinNumber?: number | null; name: string } | null = null;
 
+function authToken(): string {
+  try {
+    return localStorage.getItem('arabic_lab_token') || '';
+  } catch {
+    return '';
+  }
+}
+
 export const socket: Socket = io(SOCKET_URL, {
   autoConnect: false,
   reconnection: true,
   reconnectionAttempts: 20,
   reconnectionDelay: 1000,
+  // JWT is verified server-side (socket middleware). Role/cabin are taken from
+  // the token, never trusted from the client - this protects monitoring data.
+  auth: (cb) => cb({ token: authToken() }),
 });
 
-// Auto-register session whenever socket connects or reconnects!
 socket.on('connect', () => {
-  console.log('⚡ WebRTC & Classroom Socket connected:', socket.id);
+  console.log('⚡ Classroom signaling socket connected:', socket.id);
   if (activeUserSession) {
-    console.log('📡 Auto-registering session on connect:', activeUserSession.name, activeUserSession.role, activeUserSession.cabinNumber);
     socket.emit('register-session', {
       userId: activeUserSession.id,
       role: activeUserSession.role,
@@ -26,8 +35,14 @@ socket.on('connect', () => {
   }
 });
 
+socket.on('connect_error', (err) => {
+  console.warn('Signaling socket connect error:', err?.message || err);
+});
+
 export function connectSocket(user: { id: string; role: string; cabinNumber?: number | null; name: string }) {
   activeUserSession = user;
+  // Refresh auth token on (re)connect
+  (socket.auth as any) = (cb: (d: any) => void) => cb({ token: authToken() });
   if (!socket.connected) {
     socket.connect();
   } else {

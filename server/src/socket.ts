@@ -1,4 +1,7 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'arabic_lab_super_secret_jwt_key_2026';
 
 export interface CabinLiveState {
   online: boolean;
@@ -6,66 +9,79 @@ export interface CabinLiveState {
   userId: string | null;
   studentName: string | null;
   cabinNumber: number;
-  audioLevel: number; // 0 to 100
+  audioLevel: number; // 0..100
   inCall: boolean;
   handRaised: boolean;
   isScreenShared: boolean;
   isWebcamActive: boolean;
-  screenData?: string | null;
+  screenData?: string | null; // lightweight JPEG thumbnail for the grid overview
   lastActive: Date | null;
 }
 
-// In-memory state of all 25 cabins
+interface SocketUser {
+  id: string;
+  role: 'ADMIN' | 'PROFESSOR' | 'STUDENT' | string;
+  cabinNumber?: number | null;
+  name: string;
+}
+
 const cabinStates: Record<number, CabinLiveState> = {};
 for (let i = 1; i <= 25; i++) {
   cabinStates[i] = {
-    online: false,
-    socketId: null,
-    userId: null,
-    studentName: null,
-    cabinNumber: i,
-    audioLevel: 0,
-    inCall: false,
-    handRaised: false,
-    isScreenShared: false,
-    isWebcamActive: false,
-    screenData: null,
-    lastActive: null,
+    online: false, socketId: null, userId: null, studentName: null,
+    cabinNumber: i, audioLevel: 0, inCall: false, handRaised: false,
+    isScreenShared: false, isWebcamActive: false, screenData: null, lastActive: null,
   };
 }
 
-// Map socket.id -> session info
-const socketSessionMap = new Map<
-  string,
-  {
-    userId: string;
-    role: string;
-    cabinNumber?: number | null;
-    name: string;
-  }
->();
+const socketSessionMap = new Map<string, SocketUser>();
+const activeBroadcasts = new Map<string, { type: 'ALL' | 'SELECTED'; selectedCabins: number[] }>();
 
 export function getConnectedCabinsState() {
   return cabinStates;
 }
 
-// Track active broadcast info per professor socket
-const activeBroadcasts = new Map<string, { type: 'ALL' | 'SELECTED'; selectedCabins: number[] }>();
+function cabinOwnedBy(socket: Socket): number | null {
+  const u = socketSessionMap.get(socket.id);
+  if (u && u.role === 'STUDENT' && u.cabinNumber) return Number(u.cabinNumber);
+  return null;
+}
 
 export function setupSocketServer(io: SocketIOServer) {
   console.log('⚡ WebRTC & Classroom Signaling Engine initialized');
 
-  io.on('connection', (socket: Socket) => {
-    console.log(`🔌 Client connected: ${socket.id}`);
+  // ---- AUTH: verify JWT on every socket handshake ----
+  io.use((socket, next) => {
+    try {
+      const token =
+        (socket.handshake.auth && (socket.handshake.auth as any).token) ||
+        (socket.handshake.query && (socket.handshake.query as any).token);
+      if (!token) return next(new Error('AUTH_REQUIRED'));
+      const decoded = jwt.verify(String(token), JWT_SECRET) as any;
+      (socket.data as any).auth = {
+        id: decoded.id,
+        role: decoded.role,
+        cabinNumber: decoded.cabinNumber ?? null,
+      };
+      next();
+    } catch {
+      next(new Error('AUTH_INVALID'));
+    }
+  });
 
-    // Register User Session
-    socket.on('register-session', (data: { userId: string; role: string; cabinNumber?: number; name: string }) => {
-      const { userId, role, cabinNumber, name } = data;
-      socketSessionMap.set(socket.id, { userId, role, cabinNumber, name });
+  io.on('connection', (socket: Socket) => {
+    const auth = (socket.data as any).auth as { id: string; role: string; cabinNumber?: number | null };
+    console.log(`🔌 Client connected: ${socket.id} (${auth?.role})`);
+
+    // Register session using the TRUSTED token identity (role/cabin from JWT).
+    socket.on('register-session', (data: { name?: string }) => {
+      const role = auth.role;
+      const cabinNumber = auth.cabinNumber ?? null;
+      const name = (data && data.name) || 'User';
+      socketSessionMap.set(socket.id, { id: auth.id, role, cabinNumber, name });
 
       if (role === 'PROFESSOR' || role === 'ADMIN') {
         socket.join('professors');
-        // Send initial full cabin snapshot
         socket.emit('cabin-snapshot', cabinStates);
       }
 
@@ -76,380 +92,250 @@ export function setupSocketServer(io: SocketIOServer) {
           socket.join(`cabin-${cabNum}`);
           cabinStates[cabNum] = {
             ...cabinStates[cabNum],
-            online: true,
-            socketId: socket.id,
-            userId,
-            studentName: name,
-            lastActive: new Date(),
+            online: true, socketId: socket.id, userId: auth.id,
+            studentName: name, lastActive: new Date(),
           };
-
-          // Notify professors of student presence
           io.to('professors').emit('cabin-updated', cabinStates[cabNum]);
-          console.log(`💻 Cabin ${cabNum} (${name}) registered online`);
-        } else {
-          console.log(`💻 Student session registered: ${name} (socket: ${socket.id})`);
+          console.log(`💻 Cabin ${cabNum} (${name}) online`);
         }
       }
     });
 
-    // Real-Time Audio Level VU Update
-    socket.on('audio-level-update', (data: { cabinNumber: number; level: number }) => {
-      const { cabinNumber, level } = data;
-      if (cabinStates[cabinNumber]) {
-        const wasOffline = !cabinStates[cabinNumber].online;
-        cabinStates[cabinNumber].audioLevel = Math.min(100, Math.max(0, level));
-        if (wasOffline) {
-          cabinStates[cabinNumber].online = true;
-          cabinStates[cabinNumber].socketId = socket.id;
-          io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
-        }
-        // Broadcast audio level to all professors
-        io.to('professors').emit('cabin-audio-level', { cabinNumber, level });
-      }
+    // ---- Grid thumbnail (lightweight JPEG, ~1 fps). Ownership enforced. ----
+    socket.on('cabin-screen-frame', (data: { screenData: string }) => {
+      const cab = cabinOwnedBy(socket);
+      if (!cab) return;
+      const wasOffline = !cabinStates[cab].online;
+      cabinStates[cab].screenData = data.screenData;
+      cabinStates[cab].isScreenShared = true;
+      cabinStates[cab].online = true;
+      cabinStates[cab].socketId = socket.id;
+      if (wasOffline) io.to('professors').emit('cabin-updated', cabinStates[cab]);
+      io.to('professors').emit('cabin-screen-update', { cabinNumber: cab, screenData: data.screenData });
     });
 
-    // Raise / Lower Hand
-    socket.on('raise-hand', (data: { cabinNumber: number; studentName?: string }) => {
-      const num = Number(data.cabinNumber);
-      const studentName = data.studentName;
-      if (cabinStates[num]) {
-        cabinStates[num].handRaised = true;
-      }
-      console.log(`✋ Hand raised by Cabin ${num} (${studentName})`);
+    socket.on('audio-level-update', (data: { level: number }) => {
+      const cab = cabinOwnedBy(socket);
+      if (!cab) return;
+      cabinStates[cab].audioLevel = Math.min(100, Math.max(0, data.level));
+      cabinStates[cab].online = true;
+      cabinStates[cab].socketId = socket.id;
+      io.to('professors').emit('cabin-audio-level', { cabinNumber: cab, level: cabinStates[cab].audioLevel });
+    });
+
+    socket.on('webcam-active', (data: { active: boolean }) => {
+      const cab = cabinOwnedBy(socket);
+      if (!cab) return;
+      cabinStates[cab].isWebcamActive = Boolean(data.active);
+      io.to('professors').emit('cabin-updated', cabinStates[cab]);
+    });
+
+    // ---- Hand raise ----
+    socket.on('raise-hand', (data: { studentName?: string }) => {
+      const cab = cabinOwnedBy(socket);
+      if (!cab) return;
+      cabinStates[cab].handRaised = true;
       io.to('professors').emit('hand-raised', {
-        cabinNumber: num,
-        studentName: studentName || (cabinStates[num] ? cabinStates[num].studentName : `Cabin ${num}`),
+        cabinNumber: cab,
+        studentName: data?.studentName || cabinStates[cab].studentName || `Cabin ${cab}`,
         timestamp: new Date().toISOString(),
       });
-      if (cabinStates[num]) {
-        io.to('professors').emit('cabin-updated', cabinStates[num]);
-      }
+      io.to('professors').emit('cabin-updated', cabinStates[cab]);
     });
 
-    socket.on('lower-hand', (data: { cabinNumber: number }) => {
-      const num = Number(data.cabinNumber);
-      if (cabinStates[num]) {
-        cabinStates[num].handRaised = false;
-        io.to('professors').emit('cabin-updated', cabinStates[num]);
-      }
-      io.to('professors').emit('hand-lowered', { cabinNumber: num });
+    socket.on('lower-hand', () => {
+      const cab = cabinOwnedBy(socket);
+      if (!cab) return;
+      cabinStates[cab].handRaised = false;
+      io.to('professors').emit('cabin-updated', cabinStates[cab]);
+      io.to('professors').emit('hand-lowered', { cabinNumber: cab });
     });
 
-    // Silent Monitoring Request (Professor -> Student)
-    socket.on('request-silent-monitor', (data: { cabinNumber: number }) => {
-      const num = Number(data.cabinNumber);
-      const cabin = cabinStates[num];
-      if (cabin && cabin.online && cabin.socketId) {
-        console.log(`👀 Professor ${socket.id} requested silent monitor of Cabin ${num}`);
-        io.to(cabin.socketId).emit('start-silent-stream-to-prof', {
-          professorSocketId: socket.id,
-          cabinNumber: num,
-        });
-      }
-    });
-
-    // Stop Silent Monitoring
-    socket.on('stop-silent-monitor', (data: { cabinNumber: number }) => {
-      const num = Number(data.cabinNumber);
-      const cabin = cabinStates[num];
-      if (cabin && cabin.socketId) {
-        io.to(cabin.socketId).emit('stop-silent-stream-to-prof', {
-          professorSocketId: socket.id,
-        });
-      }
-    });
-
-    // Silent Audio Stream Toggle & Relay (Professor listening to Student Mic)
-    socket.on('request-silent-audio', (data: { cabinNumber: number; enabled: boolean }) => {
-      const num = Number(data.cabinNumber);
-      const cabin = cabinStates[num];
-      if (cabin && cabin.socketId) {
-        io.to(cabin.socketId).emit('toggle-silent-audio', { enabled: data.enabled, professorSocketId: socket.id });
-      }
-    });
-
-    socket.on('silent-audio-chunk', (data: { cabinNumber: number; chunk: string }) => {
-      io.to('professors').emit('incoming-silent-audio', data);
-    });
-
-    // Silent Webcam Frame Relay (Student sending live webcam frame in PiP)
-    socket.on('cabin-webcam-frame', (data: { cabinNumber: number; webcamData: string }) => {
-      io.to('professors').emit('cabin-webcam-update', data);
-    });
-
-    // Real-Time Student Desktop Screen Frame Update
-    socket.on('cabin-screen-frame', (data: { cabinNumber: number; screenData: string }) => {
-      const { cabinNumber, screenData } = data;
-      if (cabinStates[cabinNumber]) {
-        const wasOffline = !cabinStates[cabinNumber].online;
-        cabinStates[cabinNumber].screenData = screenData;
-        cabinStates[cabinNumber].isScreenShared = true;
-        cabinStates[cabinNumber].online = true;
-        cabinStates[cabinNumber].socketId = socket.id;
-        if (wasOffline) {
-          io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
-        }
-        // Broadcast screen frame to all professors
-        io.to('professors').emit('cabin-screen-update', { cabinNumber, screenData });
-      }
-    });
-
-    // High-Resolution Screen Request for Fullscreen Monitor
-    socket.on('request-high-res-screen', (data: { cabinNumber: number }) => {
-      const { cabinNumber } = data;
-      const cabin = cabinStates[cabinNumber];
-      if (cabin && cabin.online && cabin.socketId) {
-        io.to(cabin.socketId).emit('capture-high-res-frame');
-      }
-    });
-
-    // Professor requests High-FPS (25 FPS) 1080p Single View Surveillance
-    socket.on('start-active-surveillance', (data: { cabinNumber: number; fps?: number; width?: number; height?: number }) => {
-      const { cabinNumber, fps = 25, width = 1920, height = 1080 } = data;
-      const cabin = cabinStates[cabinNumber];
-      if (cabin && cabin.online && cabin.socketId) {
-        io.to(cabin.socketId).emit('set-surveillance-mode', { active: true, fps, width, height });
-      }
-    });
-
-    socket.on('stop-active-surveillance', (data: { cabinNumber: number }) => {
-      const { cabinNumber } = data;
-      const cabin = cabinStates[cabinNumber];
-      if (cabin && cabin.online && cabin.socketId) {
-        io.to(cabin.socketId).emit('set-surveillance-mode', { active: false });
-      }
-    });
-
-    // Professor toggles Student Webcam Stream
-    socket.on('toggle-student-webcam', (data: { cabinNumber: number; enabled: boolean }) => {
-      const num = Number(data.cabinNumber);
-      const enabled = data.enabled;
-      const cabin = cabinStates[num];
-      if (cabin) {
-        cabin.isWebcamActive = enabled;
-        if (cabin.socketId) {
-          io.to(cabin.socketId).emit('set-webcam-enabled', { enabled });
-        }
-        io.to('professors').emit('cabin-updated', cabin);
-      }
-    });
-
-    // 1:1 Video/Audio Call Management
-    socket.on('call-user-request', (data: {
-      fromRole: string;
-      fromName: string;
-      fromCabin?: number;
-      targetCabin?: number;
-      targetSocketId?: string;
-      callType: 'VIDEO' | 'AUDIO';
-      roomId: string;
+    // ---- Generic WebRTC signaling relay (offer/answer/ICE) ----
+    socket.on('rtc:signal', (data: {
+      toSocketId: string;
+      sessionId: string;
+      purpose: 'call' | 'monitor' | 'broadcast';
+      description?: any;
+      candidate?: any;
     }) => {
-      const { fromRole, fromName, fromCabin, targetCabin, targetSocketId, callType, roomId } = data;
-      console.log(`📞 Call requested from ${fromRole} ${fromName} (Cabin: ${fromCabin}) to targetCabin: ${targetCabin}`);
+      if (!data?.toSocketId) return;
+      io.to(data.toSocketId).emit('rtc:signal', {
+        fromSocketId: socket.id,
+        sessionId: data.sessionId,
+        purpose: data.purpose,
+        description: data.description,
+        candidate: data.candidate,
+      });
+    });
 
-      // Case 1: Student calling Professor (targetCabin is not specified or fromRole is STUDENT)
-      if (fromRole === 'STUDENT' && !targetCabin) {
-        console.log(`🚨 Forwarding student call to all professors: ${fromName} (Cabin ${fromCabin})`);
-        io.to('professors').emit('incoming-call', {
-          fromSocketId: socket.id,
-          fromRole,
-          fromName,
-          fromCabin: fromCabin ? Number(fromCabin) : undefined,
-          callType,
-          roomId,
+    // ---- Silent monitoring (professor subscribes to a cabin's live A/V) ----
+    socket.on('monitor:request', (data: { cabinNumber: number; sessionId: string }) => {
+      if (auth.role !== 'PROFESSOR' && auth.role !== 'ADMIN') return;
+      const cab = cabinStates[Number(data.cabinNumber)];
+      if (cab?.online && cab.socketId) {
+        io.to(cab.socketId).emit('monitor:start', {
+          professorSocketId: socket.id,
+          sessionId: data.sessionId,
+          cabinNumber: Number(data.cabinNumber),
         });
+      }
+    });
+
+    socket.on('monitor:stop', (data: { cabinNumber: number; sessionId: string }) => {
+      const cab = cabinStates[Number(data.cabinNumber)];
+      if (cab?.socketId) {
+        io.to(cab.socketId).emit('monitor:stop', {
+          professorSocketId: socket.id,
+          sessionId: data.sessionId,
+        });
+      }
+    });
+
+    // ---- Classroom broadcast (professor -> all / selected cabins) ----
+    socket.on('broadcast:start', (data: {
+      type: 'ALL' | 'SELECTED';
+      selectedCabins?: number[];
+      options: { hasScreen: boolean; hasWebcam: boolean; hasAudio: boolean };
+      title: string;
+    }) => {
+      if (auth.role !== 'PROFESSOR' && auth.role !== 'ADMIN') return;
+      const selected = data.selectedCabins || [];
+      activeBroadcasts.set(socket.id, { type: data.type, selectedCabins: selected });
+
+      const targetNums =
+        data.type === 'SELECTED' && selected.length > 0
+          ? selected
+          : Object.values(cabinStates).filter((c) => c.online).map((c) => c.cabinNumber);
+
+      const targets = targetNums
+        .map((n) => ({ cabinNumber: n, socketId: cabinStates[n]?.socketId }))
+        .filter((t) => Boolean(t.socketId)) as { cabinNumber: number; socketId: string }[];
+
+      // Tell professor who to connect to
+      socket.emit('broadcast:targets', { professorSocketId: socket.id, targets, title: data.title, options: data.options });
+      // Tell each student to open the viewer and expect a WebRTC offer
+      targets.forEach((t) => {
+        io.to(t.socketId).emit('broadcast:incoming', {
+          professorSocketId: socket.id,
+          cabinNumber: t.cabinNumber,
+          title: data.title,
+          options: data.options,
+        });
+      });
+    });
+
+    // Student viewer announces it is ready -> professor creates the sendonly peer + offer
+    socket.on('broadcast:viewer-ready', (data: { professorSocketId: string; cabinNumber: number }) => {
+      if (!data?.professorSocketId) return;
+      io.to(data.professorSocketId).emit('broadcast:viewer-ready', {
+        cabinNumber: Number(data.cabinNumber),
+        studentSocketId: socket.id,
+      });
+    });
+
+    socket.on('broadcast:stop', () => {
+      activeBroadcasts.delete(socket.id);
+      io.to('students').emit('broadcast:ended', { professorSocketId: socket.id });
+    });
+
+    // ---- Shared practice media (professor pushes a file students control) ----
+    socket.on('media:push', (data: { targets: 'ALL' | number[]; url: string; name: string; mode: 'student' | 'synced' }) => {
+      if (auth.role !== 'PROFESSOR' && auth.role !== 'ADMIN') return;
+      const payload = { url: data.url, name: data.name, mode: data.mode, professorSocketId: socket.id };
+      if (data.targets === 'ALL') {
+        io.to('students').emit('media:push', payload);
+      } else {
+        data.targets.forEach((n) => io.to(`cabin-${n}`).emit('media:push', payload));
+      }
+    });
+
+    socket.on('media:control', (data: { targets: 'ALL' | number[]; action: 'play' | 'pause' | 'seek' | 'stop'; time?: number }) => {
+      if (auth.role !== 'PROFESSOR' && auth.role !== 'ADMIN') return;
+      const payload = { action: data.action, time: data.time };
+      if (data.targets === 'ALL') io.to('students').emit('media:control', payload);
+      else data.targets.forEach((n) => io.to(`cabin-${n}`).emit('media:control', payload));
+    });
+
+    socket.on('media:clear', (data: { targets: 'ALL' | number[] }) => {
+      if (data.targets === 'ALL') io.to('students').emit('media:clear');
+      else data.targets.forEach((n) => io.to(`cabin-${n}`).emit('media:clear'));
+    });
+
+    // ---- 1:1 Calls ----
+    socket.on('call-user-request', (data: {
+      fromRole: string; fromName: string; fromCabin?: number;
+      targetCabin?: number; targetSocketId?: string;
+      callType: 'VIDEO' | 'AUDIO'; roomId: string;
+    }) => {
+      const base = {
+        fromSocketId: socket.id,
+        fromRole: data.fromRole,
+        fromName: data.fromName,
+        fromCabin: data.fromCabin ? Number(data.fromCabin) : undefined,
+        callType: data.callType,
+        roomId: data.roomId,
+      };
+
+      // Student -> professor (no specific target): ring all professors
+      if (data.fromRole === 'STUDENT' && !data.targetCabin) {
+        io.to('professors').emit('incoming-call', base);
         return;
       }
 
-      // Case 2: Direct call to specific socket
-      let recipientSocketId = targetSocketId;
-
-      // Case 3: Call to a specific cabin
-      if (!recipientSocketId && targetCabin && cabinStates[Number(targetCabin)]?.socketId) {
-        recipientSocketId = cabinStates[Number(targetCabin)].socketId!;
+      let recipient = data.targetSocketId;
+      if (!recipient && data.targetCabin && cabinStates[Number(data.targetCabin)]?.socketId) {
+        recipient = cabinStates[Number(data.targetCabin)].socketId!;
       }
-
-      if (recipientSocketId) {
-        io.to(recipientSocketId).emit('incoming-call', {
-          fromSocketId: socket.id,
-          fromRole,
-          fromName,
-          fromCabin: fromCabin ? Number(fromCabin) : undefined,
-          callType,
-          roomId,
-        });
-      } else {
-        console.warn(`Call target unreachable: targetCabin=${targetCabin}, targetSocketId=${targetSocketId}`);
-      }
+      if (recipient) io.to(recipient).emit('incoming-call', base);
+      else console.warn(`Call target unreachable: cabin=${data.targetCabin}`);
     });
 
     socket.on('call-response', (data: {
-      accepted: boolean;
-      callerSocketId: string;
-      roomId: string;
-      responderName: string;
-      responderCabin?: number;
+      accepted: boolean; callerSocketId: string; roomId: string;
+      responderName: string; responderCabin?: number;
     }) => {
-      const { accepted, callerSocketId, roomId, responderName, responderCabin } = data;
-      io.to(callerSocketId).emit('call-response-received', {
-        accepted,
+      io.to(data.callerSocketId).emit('call-response-received', {
+        accepted: data.accepted,
         responderSocketId: socket.id,
-        roomId,
-        responderName,
-        responderCabin,
+        roomId: data.roomId,
+        responderName: data.responderName,
+        responderCabin: data.responderCabin,
       });
-
-      if (accepted) {
-        if (responderCabin && cabinStates[Number(responderCabin)]) {
-          cabinStates[Number(responderCabin)].inCall = true;
-          io.to('professors').emit('cabin-updated', cabinStates[Number(responderCabin)]);
-        }
+      if (data.accepted && data.responderCabin && cabinStates[Number(data.responderCabin)]) {
+        cabinStates[Number(data.responderCabin)].inCall = true;
+        io.to('professors').emit('cabin-updated', cabinStates[Number(data.responderCabin)]);
       }
     });
 
-    socket.on('call-ended', (data: { targetSocketId?: string; cabinNumber?: number }) => {
-      const { targetSocketId, cabinNumber } = data;
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('call-ended-by-peer');
-      }
-      if (cabinNumber && cabinStates[Number(cabinNumber)]) {
-        cabinStates[Number(cabinNumber)].inCall = false;
-        io.to('professors').emit('cabin-updated', cabinStates[Number(cabinNumber)]);
-      }
-      // Also broadcast call ended to all professors and students in case socket ID was general
-      socket.broadcast.emit('call-ended-by-peer', { cabinNumber });
-    });
-
-    // Classroom Broadcast (Professor -> All Cabins or Selected Cabins)
-    socket.on('broadcast-start', (data: {
-      type: 'ALL' | 'SELECTED';
-      selectedCabins?: number[];
-      hasScreenShare: boolean;
-      hasWebcamPiP: boolean;
-      hasAudio: boolean;
-      title: string;
-    }) => {
-      console.log(`📢 Classroom broadcast started: ${data.title} (${data.type})`);
-      const selectedCabins = data.selectedCabins || [];
-      // Store active broadcast info for this professor
-      activeBroadcasts.set(socket.id, { type: data.type, selectedCabins });
-
-      if (data.type === 'SELECTED' && selectedCabins.length > 0) {
-        selectedCabins.forEach((cabNum) => {
-          io.to(`cabin-${cabNum}`).emit('incoming-broadcast', {
-            professorSocketId: socket.id,
-            ...data,
-          });
-        });
-      } else {
-        io.to('students').emit('incoming-broadcast', {
-          professorSocketId: socket.id,
-          ...data,
-        });
-      }
-    });
-
-    // Broadcast live video/screen frame streaming
-    socket.on('broadcast-frame', (data: {
-      screenFrame?: string | null;
-      webcamFrame?: string | null;
-    }) => {
-      const broadcast = activeBroadcasts.get(socket.id);
-      if (broadcast && broadcast.type === 'SELECTED' && broadcast.selectedCabins.length > 0) {
-        broadcast.selectedCabins.forEach((cabNum) => {
-          io.to(`cabin-${cabNum}`).emit('incoming-broadcast-frame', data);
-        });
-      } else {
-        io.to('students').emit('incoming-broadcast-frame', data);
-      }
-    });
-
-    // Broadcast live audio chunks (base64 audio data or Web Audio buffers)
-    socket.on('broadcast-audio-chunk', (data: { audioChunk: string }) => {
-      const broadcast = activeBroadcasts.get(socket.id);
-      if (broadcast && broadcast.type === 'SELECTED' && broadcast.selectedCabins.length > 0) {
-        broadcast.selectedCabins.forEach((cabNum) => {
-          io.to(`cabin-${cabNum}`).emit('incoming-broadcast-audio', data);
-        });
-      } else {
-        io.to('students').emit('incoming-broadcast-audio', data);
-      }
-    });
-
-    socket.on('broadcast-stop', () => {
-      console.log('📢 Classroom broadcast stopped');
-      activeBroadcasts.delete(socket.id);
-      io.to('students').emit('broadcast-ended');
-    });
-
-    // WebRTC Signaling Relay (SDP Offer / Answer / ICE Candidates)
-    socket.on('webrtc-signal', (data: {
-      targetSocketId: string;
-      signal: any;
-      type: 'offer' | 'answer' | 'candidate';
-      streamPurpose: 'monitor' | 'call' | 'broadcast' | 'peer';
-      callId?: string;
-    }) => {
-      const { targetSocketId, signal, type, streamPurpose, callId } = data;
-      if (targetSocketId) {
-        io.to(targetSocketId).emit('webrtc-signal', {
-          senderSocketId: socket.id,
-          signal,
-          type,
-          streamPurpose,
-          callId,
-        });
-      }
-    });
-
-    // Readiness Handshake Relay: callee announces its PC + listener are live
-    socket.on('webrtc-ready', (data: { targetSocketId: string; callId: string }) => {
+    // FIXED: notify ONLY the peer, never broadcast to everyone.
+    socket.on('call-ended', (data: { targetSocketId?: string; cabinNumber?: number; roomId?: string }) => {
       if (data.targetSocketId) {
-        io.to(data.targetSocketId).emit('webrtc-ready', {
-          senderSocketId: socket.id,
-          callId: data.callId,
-        });
+        io.to(data.targetSocketId).emit('call-ended-by-peer', { roomId: data.roomId });
+      }
+      if (data.cabinNumber && cabinStates[Number(data.cabinNumber)]) {
+        cabinStates[Number(data.cabinNumber)].inCall = false;
+        io.to('professors').emit('cabin-updated', cabinStates[Number(data.cabinNumber)]);
       }
     });
 
-    // Peer Dialogue Connect (Student Cabin to Student Cabin Arabic Drill)
-    socket.on('peer-dialogue-request', (data: { fromCabin: number; targetCabin: number }) => {
-      const { fromCabin, targetCabin } = data;
-      const target = cabinStates[targetCabin];
-      if (target && target.online && target.socketId) {
-        io.to(target.socketId).emit('incoming-peer-dialogue', {
-          fromCabin,
-          fromSocketId: socket.id,
-        });
-      }
-    });
-
-    // Disconnect Handler
+    // ---- Disconnect cleanup ----
     socket.on('disconnect', () => {
-      // Clean up any active broadcast by this socket
       if (activeBroadcasts.has(socket.id)) {
         activeBroadcasts.delete(socket.id);
+        io.to('students').emit('broadcast:ended', { professorSocketId: socket.id });
       }
       const session = socketSessionMap.get(socket.id);
-      if (session) {
-        const { cabinNumber, name } = session;
-        if (cabinNumber && cabinStates[cabinNumber]) {
-          cabinStates[cabinNumber] = {
-            ...cabinStates[cabinNumber],
-            online: false,
-            socketId: null,
-            audioLevel: 0,
-            inCall: false,
-            handRaised: false,
-            isScreenShared: false,
-            isWebcamActive: false,
-            screenData: null,
-          };
-          io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
-          console.log(`🔌 Cabin ${cabinNumber} (${name}) went offline`);
-        }
-        socketSessionMap.delete(socket.id);
+      if (session?.cabinNumber && cabinStates[session.cabinNumber]) {
+        cabinStates[session.cabinNumber] = {
+          ...cabinStates[session.cabinNumber],
+          online: false, socketId: null, audioLevel: 0, inCall: false,
+          handRaised: false, isScreenShared: false, isWebcamActive: false, screenData: null,
+        };
+        io.to('professors').emit('cabin-updated', cabinStates[session.cabinNumber]);
+        console.log(`🔌 Cabin ${session.cabinNumber} (${session.name}) offline`);
       }
+      socketSessionMap.delete(socket.id);
     });
   });
 }

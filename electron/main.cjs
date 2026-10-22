@@ -8,10 +8,9 @@ const { spawn } = require('child_process');
 const APP_VERSION = '1.5.1';
 
 // Command line switches for WebRTC and Screen Capture
-app.commandLine.appendSwitch(
-  'unsafely-treat-insecure-origin-as-secure',
-  'http://10.0.93.68:8080,http://10.0.93.68:5000,http://localhost:8080,http://localhost:5000,http://localhost:5173'
-);
+const LAN_ORIGINS = process.env.LAB_LAN_ORIGINS ||
+  'http://10.0.93.68:8080,http://10.0.93.68:5000,http://localhost:8080,http://localhost:5000,http://localhost:5173';
+app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', LAN_ORIGINS);
 app.commandLine.appendSwitch('allow-http-screen-capture');
 app.commandLine.appendSwitch('enable-usermedia-screen-capturing');
 app.commandLine.appendSwitch('ignore-certificate-errors');
@@ -51,10 +50,13 @@ function createWindow() {
   mainWindow.webContents.session.setPermissionCheckHandler(() => true);
 
   // Handle native getDisplayMedia requests automatically
+  // Auto-grant screen capture AND attach system/desktop loopback audio so the
+  // professor/student can share whatever is playing on the desktop (video/file
+  // sound), not just the microphone. 'loopback' is captured on Windows.
   mainWindow.webContents.session.setDisplayMediaRequestHandler((request, callback) => {
-    desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
+    desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
       if (sources && sources.length > 0) {
-        callback({ video: sources[0] });
+        callback({ video: sources[0], audio: 'loopback' });
       } else {
         callback({});
       }
@@ -158,22 +160,6 @@ function createWindow() {
   // Expose current EXE version to renderer page (for version badge in UI)
   ipcMain.handle('GET_APP_VERSION', () => {
     return APP_VERSION;
-  });
-
-  // Suppress native alert() dialogs in student Electron windows
-  // (prevents broadcast viewer open/close loop caused by alert popups)
-  // Must be injected AFTER page load (did-finish-load fires after each navigation)
-  const suppressAlerts = `
-    window.alert = function(msg) {
-      console.log('[Alert suppressed in ArabicLab Electron]:', msg);
-    };
-    window.confirm = function(msg) {
-      console.log('[Confirm suppressed]:', msg);
-      return true;
-    };
-  `;
-  mainWindow.webContents.on('did-finish-load', () => {
-    mainWindow.webContents.executeJavaScript(suppressAlerts).catch(() => {});
   });
 
   mainWindow.on('close', (event) => {

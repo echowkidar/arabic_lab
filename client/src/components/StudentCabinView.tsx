@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Language } from '../types';
-import {
-  Hand, Phone, Video, Mic, Volume2, BookOpen,
-  CheckCircle, Radio, Users, ShieldCheck, Camera, CameraOff, RefreshCw
-} from 'lucide-react';
+import { Hand, Phone, Video, Mic, BookOpen, Users, ShieldCheck, Camera, CameraOff } from 'lucide-react';
 import { socket } from '../services/socket';
 import { AudioAnalyzer } from '../services/audioAnalyzer';
 import { BroadcastViewerModal } from './BroadcastViewerModal';
+import { PracticePlayer } from './PracticePlayer';
+import { getMicStream, getWebcamStream, getScreenStream, mixAudioTracks, stopStream, isElectron, MixedAudio } from '../services/mediaCapture';
+import { createPeer, closePeer, addMediaTrack } from '../services/rtcEngine';
 
 interface StudentCabinViewProps {
   user: User;
@@ -14,721 +14,339 @@ interface StudentCabinViewProps {
   language: Language;
 }
 
-export const StudentCabinView: React.FC<StudentCabinViewProps> = ({
-  user,
-  onStartCall,
-  language,
-}) => {
+export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStartCall, language }) => {
   const isArabic = language === 'ar';
   const isUrdu = language === 'ur';
   const cabinNumber = user.cabinNumber || 1;
   const cabinPad = String(cabinNumber).padStart(2, '0');
 
-  // Interactive Student States
   const [handRaised, setHandRaised] = useState(false);
   const [micVolume, setMicVolume] = useState(0);
   const [selectedPeerCabin, setSelectedPeerCabin] = useState<number>(cabinNumber === 1 ? 2 : 1);
   const [activeExerciseTab, setActiveExerciseTab] = useState<'quran' | 'dialogue' | 'grammar'>('quran');
-  const [broadcastActive, setBroadcastActive] = useState<boolean>(false);
-  const [broadcastData, setBroadcastData] = useState<any>(null);
-  const [showBroadcastViewer, setShowBroadcastViewer] = useState<boolean>(false);
-  const autoOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [hardwareOk, setHardwareOk] = useState(false);
+  const [hardwareError, setHardwareError] = useState<string | null>(null);
 
-  // Physical Windows Hardware State
-  const [isHardwareActive, setIsHardwareActive] = useState(false);
-  const [hardwareStream, setHardwareStream] = useState<MediaStream | null>(null);
-  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
-  const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
-  const [selectedAudioId, setSelectedAudioId] = useState<string>('');
-  const [selectedVideoId, setSelectedVideoId] = useState<string>('');
+  const [broadcast, setBroadcast] = useState<{ professorSocketId: string; title: string } | null>(null);
+  const [practice, setPractice] = useState<{ url: string; name: string; mode: 'student' | 'synced' } | null>(null);
 
-  const audioAnalyzerRef = useRef<AudioAnalyzer | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  const webcamStreamRef = useRef<MediaStream | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const mixedRef = useRef<MixedAudio | null>(null);
+  const analyzerRef = useRef<AudioAnalyzer | null>(null);
   const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
+  const watchersRef = useRef<Set<string>>(new Set()); // active monitor sessionIds
 
-  // Listen to professor broadcasts and silent monitor requests
+  // 1) Auto-acquire mic + webcam on mount (no manual click needed)
   useEffect(() => {
-    socket.on('incoming-broadcast', (data) => {
-      setBroadcastActive(true);
-      setBroadcastData(data);
-      // Auto-open viewer immediately so student doesn't miss frames
-      setShowBroadcastViewer(true);
-
-      // Safety net: if viewer was closed/missed, force-open after 15 seconds
-      if (autoOpenTimerRef.current) clearTimeout(autoOpenTimerRef.current);
-      autoOpenTimerRef.current = setTimeout(() => {
-        setShowBroadcastViewer(true);
-      }, 15000);
-    });
-
-    socket.on('broadcast-ended', () => {
-      if (autoOpenTimerRef.current) {
-        clearTimeout(autoOpenTimerRef.current);
-        autoOpenTimerRef.current = null;
-      }
-      setBroadcastActive(false);
-      setBroadcastData(null);
-      setShowBroadcastViewer(false);
-    });
-
-    // Auto-respond to silent monitor from professor
-    socket.on('start-silent-stream-to-prof', (data: { professorSocketId: string }) => {
-      console.log('📡 Silent monitor stream requested by professor:', data.professorSocketId);
-      socket.emit('webrtc-signal', {
-        targetSocketId: data.professorSocketId,
-        signal: { type: 'silent-stream-ready', cabinNumber },
-        type: 'offer',
-        streamPurpose: 'monitor',
-      });
-    });
-
-    // Silent Audio Stream from Student to Professor (Listen Button)
-    let audioRecorder: MediaRecorder | null = null;
-    const handleToggleSilentAudio = (data: { enabled: boolean }) => {
-      if (data.enabled && hardwareStream) {
-        try {
-          const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-            ? 'audio/webm;codecs=opus'
-            : 'audio/webm';
-          audioRecorder = new MediaRecorder(hardwareStream, { mimeType });
-          audioRecorder.ondataavailable = async (e) => {
-            if (e.data && e.data.size > 0) {
-              try {
-                const buf = await e.data.arrayBuffer();
-                let bin = '';
-                const b = new Uint8Array(buf);
-                for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
-                socket.emit('silent-audio-chunk', { cabinNumber, chunk: btoa(bin) });
-              } catch (_) {}
-            }
-          };
-          audioRecorder.start(600);
-        } catch (_) {}
-      } else {
-        if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
-      }
-    };
-
-    // Silent Webcam frame streaming when Professor toggles webcam in Silent Monitor
-    let webcamInterval: any = null;
-    const handleSetWebcam = (data: { enabled: boolean }) => {
-      if (webcamInterval) clearInterval(webcamInterval);
-      if (data.enabled) {
-        const offCanvas = document.createElement('canvas');
-        offCanvas.width = 240;
-        offCanvas.height = 180;
-        const offCtx = offCanvas.getContext('2d');
-        webcamInterval = setInterval(() => {
-          if (webcamVideoRef.current && webcamVideoRef.current.videoWidth > 0 && offCtx) {
-            offCtx.drawImage(webcamVideoRef.current, 0, 0, offCanvas.width, offCanvas.height);
-            socket.emit('cabin-webcam-frame', { cabinNumber, webcamData: offCanvas.toDataURL('image/jpeg', 0.5) });
-          }
-        }, 300);
-      }
-    };
-
-    socket.on('toggle-silent-audio', handleToggleSilentAudio);
-    socket.on('set-webcam-enabled', handleSetWebcam);
-
-    return () => {
-      socket.off('incoming-broadcast');
-      socket.off('broadcast-ended');
-      socket.off('start-silent-stream-to-prof');
-      socket.off('toggle-silent-audio', handleToggleSilentAudio);
-      socket.off('set-webcam-enabled', handleSetWebcam);
-      if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
-      if (webcamInterval) clearInterval(webcamInterval);
-      if (autoOpenTimerRef.current) clearTimeout(autoOpenTimerRef.current);
-    };
-  }, [cabinNumber, hardwareStream]);
-
-  // Silent Background Desktop Screen Surveillance for Electron Cabin
-  useEffect(() => {
-    const electronAPI = (window as any).electronAPI;
-    let isMounted = true;
-    let timer: any = null;
-    let isCapturing = false;
-    let currentWidth = 960;
-    let currentHeight = 540;
-
-    const captureScreenFrame = async (width = currentWidth, height = currentHeight) => {
-      if (!isMounted || isCapturing) return;
-      if (electronAPI && electronAPI.getDesktopSources) {
-        isCapturing = true;
-        try {
-          const sources = await electronAPI.getDesktopSources({
-            types: ['screen'],
-            thumbnailSize: { width, height },
-          });
-          if (sources && sources.length > 0 && sources[0].thumbnail) {
-            socket.emit('cabin-screen-frame', {
-              cabinNumber,
-              screenData: sources[0].thumbnail,
-            });
-          }
-        } catch (err) {
-          console.warn('Background screen capture error:', err);
-        } finally {
-          isCapturing = false;
-        }
-      }
-    };
-
-    // Immediate initial capture
-    captureScreenFrame(currentWidth, currentHeight);
-
-    // Regular interval capture (every 1.5 seconds for grid view)
-    timer = setInterval(() => {
-      captureScreenFrame(currentWidth, currentHeight);
-    }, 1500);
-
-    // High-FPS (25 FPS) 1080p mode when professor opens full monitor modal
-    const handleSetSurveillanceMode = (data: { active: boolean; fps?: number; width?: number; height?: number }) => {
-      if (timer) clearInterval(timer);
-      if (data && data.active) {
-        const targetFps = data.fps || 25;
-        const intervalMs = Math.max(40, Math.floor(1000 / targetFps));
-        currentWidth = data.width || 1920;
-        currentHeight = data.height || 1080;
-        console.log(`⚡ Cabin ${cabinNumber}: High-FPS Surveillance (${targetFps} FPS @ ${currentWidth}x${currentHeight})`);
-        captureScreenFrame(currentWidth, currentHeight);
-        timer = setInterval(() => {
-          captureScreenFrame(currentWidth, currentHeight);
-        }, intervalMs);
-      } else {
-        currentWidth = 960;
-        currentHeight = 540;
-        timer = setInterval(() => {
-          captureScreenFrame(currentWidth, currentHeight);
-        }, 1500);
-      }
-    };
-
-    const handleHighResRequest = () => {
-      captureScreenFrame(1920, 1080);
-    };
-
-    socket.on('set-surveillance-mode', handleSetSurveillanceMode);
-    socket.on('capture-high-res-frame', handleHighResRequest);
-
-    return () => {
-      isMounted = false;
-      if (timer) clearInterval(timer);
-      socket.off('set-surveillance-mode', handleSetSurveillanceMode);
-      socket.off('capture-high-res-frame', handleHighResRequest);
-    };
-  }, [cabinNumber]);
-
-  // Auto-connect microphone in Electron app without requiring manual click
-  useEffect(() => {
-    const electronAPI = (window as any).electronAPI;
-    if (electronAPI?.isElectron && !isHardwareActive) {
-      navigator.mediaDevices?.getUserMedia({ audio: true })
-        .then((stream) => {
-          setHardwareStream(stream);
-          setIsHardwareActive(true);
-          const analyzer = new AudioAnalyzer();
-          analyzer.start(stream, (volume) => {
-            setMicVolume(volume);
-            socket.emit('audio-level-update', {
-              cabinNumber,
-              level: volume,
-            });
-          });
-          audioAnalyzerRef.current = analyzer;
-        })
-        .catch((e) => {
-          console.log('Silent auto mic initialization notice:', e);
-        });
-    }
-  }, [cabinNumber]);
-
-  // Fallback simulated mic fluctuation when physical hardware is not turned on
-  useEffect(() => {
-    if (isHardwareActive) return; // Use real physical hardware when active!
-
-    const interval = setInterval(() => {
-      const simulatedLevel = Math.floor(Math.random() * 45) + 8;
-      setMicVolume(simulatedLevel);
-      socket.emit('audio-level-update', {
-        cabinNumber,
-        level: simulatedLevel,
-      });
-    }, 600);
-
-    return () => clearInterval(interval);
-  }, [cabinNumber, isHardwareActive]);
-
-  // Connect Physical Windows Webcam & Headphone Microphone
-  const handleToggleHardware = async () => {
-    if (isHardwareActive) {
-      // Stop Hardware
-      if (audioAnalyzerRef.current) {
-        audioAnalyzerRef.current.stop();
-        audioAnalyzerRef.current = null;
-      }
-      if (hardwareStream) {
-        hardwareStream.getTracks().forEach((track) => track.stop());
-        setHardwareStream(null);
-      }
-      setIsHardwareActive(false);
-    } else {
-      // Start Hardware
+    let cancelled = false;
+    (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: selectedAudioId ? { deviceId: { exact: selectedAudioId } } : true,
-          video: selectedVideoId ? { deviceId: { exact: selectedVideoId } } : true,
-        });
-
-        setHardwareStream(stream);
-        setIsHardwareActive(true);
-
-        if (webcamVideoRef.current) {
-          webcamVideoRef.current.srcObject = stream;
-        }
-
-        // Start live audio analyzer on the real physical headset microphone
-        const analyzer = new AudioAnalyzer();
-        analyzer.start(stream, (volume) => {
-          setMicVolume(volume);
-          socket.emit('audio-level-update', {
-            cabinNumber,
-            level: volume,
+        const mic = await getMicStream().catch(() => null);
+        if (mic && !cancelled) {
+          micStreamRef.current = mic;
+          const analyzer = new AudioAnalyzer();
+          analyzer.start(mic, (vol) => {
+            setMicVolume(vol);
+            socket.emit('audio-level-update', { level: vol });
           });
-        });
-        audioAnalyzerRef.current = analyzer;
-
-        // Enumerate detected devices
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        setAudioDevices(devices.filter((d) => d.kind === 'audioinput'));
-        setVideoDevices(devices.filter((d) => d.kind === 'videoinput'));
-      } catch (err: any) {
-        console.warn('Physical device error:', err);
-        alert('Could not access Windows webcam/headphone: ' + (err.message || 'Permission denied'));
+          analyzerRef.current = analyzer;
+        }
+        const cam = await getWebcamStream().catch(() => null);
+        if (cam && !cancelled) {
+          webcamStreamRef.current = cam;
+          if (webcamVideoRef.current) webcamVideoRef.current.srcObject = cam;
+          socket.emit('webcam-active', { active: true });
+        }
+        if (!cancelled && (mic || cam)) { setHardwareOk(true); setHardwareError(null); }
+        if (!mic && !cam && !cancelled) setHardwareError('Microphone/Webcam not accessible.');
+      } catch (e: any) {
+        if (!cancelled) setHardwareError(e?.message || 'Device access failed');
       }
-    }
-  };
+    })();
+    return () => {
+      cancelled = true;
+      analyzerRef.current?.stop();
+      stopStream(micStreamRef.current);
+      stopStream(webcamStreamRef.current);
+      stopStream(screenStreamRef.current);
+      mixedRef.current?.stop();
+    };
+  }, []);
 
-  // Effect to attach hardware stream to video element
+  // 2) Lightweight grid thumbnail (~every 2s) via Electron desktopCapturer
   useEffect(() => {
-    if (hardwareStream && webcamVideoRef.current) {
-      webcamVideoRef.current.srcObject = hardwareStream;
-    }
-  }, [hardwareStream]);
+    const api = (window as any).electronAPI;
+    if (!api?.getDesktopSources) return;
+    let stop = false;
+    let busy = false;
+    const tick = async () => {
+      if (stop || busy) return;
+      busy = true;
+      try {
+        const sources = await api.getDesktopSources({ types: ['screen'], thumbnailSize: { width: 480, height: 270 } });
+        if (sources?.[0]?.thumbnail) socket.emit('cabin-screen-frame', { screenData: sources[0].thumbnail });
+      } catch { /* noop */ } finally { busy = false; }
+    };
+    tick();
+    const timer = setInterval(tick, 2000);
+    return () => { stop = true; clearInterval(timer); };
+  }, []);
 
-  // Raise / Lower Hand
-  const handleToggleHand = () => {
-    if (!handRaised) {
-      setHandRaised(true);
-      socket.emit('raise-hand', { cabinNumber, studentName: user.name });
-    } else {
-      setHandRaised(false);
-      socket.emit('lower-hand', { cabinNumber });
-    }
+  // 3) Live A/V publish to a professor when monitoring starts
+  useEffect(() => {
+    const ensureScreen = async (): Promise<MediaStream | null> => {
+      if (screenStreamRef.current) return screenStreamRef.current;
+      try {
+        const scr = await getScreenStream(true); // screen video + system/desktop audio
+        screenStreamRef.current = scr;
+        return scr;
+      } catch {
+        return null; // kiosk/browser without silent capture -> publish mic+cam only
+      }
+    };
+
+    const onMonitorStart = async (data: { professorSocketId: string; sessionId: string }) => {
+      const { professorSocketId, sessionId } = data;
+      const scr = await ensureScreen();
+      const micTrack = micStreamRef.current?.getAudioTracks()[0] || null;
+      const sysAudio = scr?.getAudioTracks()[0] || null;
+
+      // Mixed audio = teacher can hear mic + whatever plays on the desktop
+      let audioTrack: MediaStreamTrack | null = micTrack;
+      if (sysAudio) {
+        const toMix = [micTrack, sysAudio].filter(Boolean) as MediaStreamTrack[];
+        if (toMix.length > 0) {
+          if (!mixedRef.current) mixedRef.current = mixAudioTracks(toMix);
+          audioTrack = mixedRef.current?.track || micTrack;
+        }
+      }
+
+      const mainStream = new MediaStream();
+      const screenVideo = scr?.getVideoTracks()[0];
+      if (screenVideo) mainStream.addTrack(screenVideo);
+      if (audioTrack) mainStream.addTrack(audioTrack);
+
+      createPeer({
+        sessionId, remoteSocketId: professorSocketId, purpose: 'monitor',
+        polite: false, localStream: mainStream,
+      });
+      // Second video track = webcam (professor shows it as PiP)
+      const camTrack = webcamStreamRef.current?.getVideoTracks()[0];
+      if (camTrack) addMediaTrack(sessionId, camTrack, new MediaStream([camTrack]));
+
+      watchersRef.current.add(sessionId);
+    };
+
+    const onMonitorStop = (data: { sessionId: string }) => {
+      closePeer(data.sessionId);
+      watchersRef.current.delete(data.sessionId);
+      if (watchersRef.current.size === 0) {
+        stopStream(screenStreamRef.current);
+        screenStreamRef.current = null;
+        mixedRef.current?.stop();
+        mixedRef.current = null;
+      }
+    };
+
+    socket.on('monitor:start', onMonitorStart);
+    socket.on('monitor:stop', onMonitorStop);
+    return () => { socket.off('monitor:start', onMonitorStart); socket.off('monitor:stop', onMonitorStop); };
+  }, []);
+
+  // 4) Broadcast + practice media events
+  useEffect(() => {
+    const onBroadcast = (data: { professorSocketId: string; title: string }) => setBroadcast(data);
+    const onBroadcastEnd = () => setBroadcast(null);
+    const onMediaPush = (data: { url: string; name: string; mode: 'student' | 'synced' }) => setPractice(data);
+    const onMediaClear = () => setPractice(null);
+    socket.on('broadcast:incoming', onBroadcast);
+    socket.on('broadcast:ended', onBroadcastEnd);
+    socket.on('media:push', onMediaPush);
+    socket.on('media:clear', onMediaClear);
+    return () => {
+      socket.off('broadcast:incoming', onBroadcast);
+      socket.off('broadcast:ended', onBroadcastEnd);
+      socket.off('media:push', onMediaPush);
+      socket.off('media:clear', onMediaClear);
+    };
+  }, []);
+
+  const toggleHand = () => {
+    if (!handRaised) { setHandRaised(true); socket.emit('raise-hand', { studentName: user.name }); }
+    else { setHandRaised(false); socket.emit('lower-hand', {}); }
   };
 
-  // Call Professor
-  const handleCallProfessor = () => {
-    onStartCall('PROFESSOR', 'VIDEO');
-  };
-
-  // Connect with Peer Cabin
-  const handleConnectPeer = () => {
-    onStartCall(selectedPeerCabin, 'VIDEO');
+  const retryHardware = async () => {
+    setHardwareError(null);
+    try {
+      if (!micStreamRef.current) {
+        const mic = await getMicStream();
+        micStreamRef.current = mic;
+        const analyzer = new AudioAnalyzer();
+        analyzer.start(mic, (vol) => { setMicVolume(vol); socket.emit('audio-level-update', { level: vol }); });
+        analyzerRef.current = analyzer;
+      }
+      if (!webcamStreamRef.current) {
+        const cam = await getWebcamStream();
+        webcamStreamRef.current = cam;
+        if (webcamVideoRef.current) webcamVideoRef.current.srcObject = cam;
+        socket.emit('webcam-active', { active: true });
+      }
+      setHardwareOk(true);
+    } catch (e: any) {
+      setHardwareError(e?.message || 'Still cannot access devices');
+    }
   };
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
-      
-      {/* Live Classroom Broadcast Banner if active */}
-      {broadcastActive && (
-        <div className="glass-panel-elevated p-4 border-amber-500/70 bg-gradient-to-r from-amber-950/80 via-emerald-950/80 to-slate-950/80 flex flex-wrap items-center justify-between gap-4 animate-pulse">
+      {broadcast && (
+        <div className="glass-panel-elevated p-4 border-amber-500/70 bg-gradient-to-r from-amber-950/80 to-slate-950/80 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-amber-500 text-black flex items-center justify-center font-bold">
-              <Radio className="w-5 h-5 animate-spin" />
-            </div>
+            <div className="w-10 h-10 rounded-full bg-amber-500 text-black flex items-center justify-center font-bold"><Video className="w-5 h-5" /></div>
             <div>
-              <h3 className="text-base font-bold text-amber-300 font-arabic">
-                {isArabic ? 'بث مباشر من الأستاذ محمد فيضان بيك (Prof. MOHD FAIZAN BEG)' : 'Live Broadcast from Prof. MOHD FAIZAN BEG'}
-              </h3>
-              <p className="text-xs text-slate-300">
-                {isArabic ? 'الأستاذ يشارك شاشته وشرح الدرس مع جميع الكبائن' : 'Professor is sharing screen and lecture across all cabins'}
-              </p>
+              <h3 className="text-base font-bold text-amber-300">{isArabic ? 'بث مباشر من الأستاذ' : 'Live Broadcast from Professor'}</h3>
+              <p className="text-xs text-slate-300">{broadcast.title}</p>
             </div>
           </div>
-          <button
-            onClick={() => setShowBroadcastViewer(true)}
-            className="btn-gold text-xs py-2 px-4 shadow-lg hover:scale-105 transition-all flex items-center gap-1.5"
-          >
-            <Radio className="w-3.5 h-3.5 animate-pulse" />
-            <span>{isArabic ? 'مشاهدة البث المباشر' : 'Watch Live Broadcast'}</span>
-          </button>
         </div>
       )}
 
-      {/* Student Cabin Header HUD */}
+      {practice && (
+        <PracticePlayer url={practice.url} name={practice.name} mode={practice.mode} language={language} onClose={() => setPractice(null)} />
+      )}
+
       <div className="glass-panel-elevated p-6 flex flex-wrap items-center justify-between gap-4 border-emerald-500/30">
         <div className="flex items-center gap-4">
           <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-emerald-600 to-emerald-900 border-2 border-emerald-400 flex flex-col items-center justify-center shadow-lg">
             <span className="text-[10px] font-mono tracking-wider text-emerald-200 uppercase">Cabin</span>
             <span className="text-2xl font-black font-heading text-white">{cabinPad}</span>
           </div>
-
           <div>
             <div className="flex items-center gap-3">
               <h2 className="text-2xl font-bold text-white font-arabic">{user.name}</h2>
-              <span className="status-badge status-online">
-                <span className="pulse-dot" />
-                <span>LAN ACTIVE</span>
-              </span>
+              <span className="status-badge status-online"><span className="pulse-dot" /><span>LAN ACTIVE</span></span>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Aligarh Muslim University (AMU) • Department of Arabic Language Lab
-            </p>
+            <p className="text-xs text-slate-400 mt-0.5">Aligarh Muslim University (AMU) • Department of Arabic Language Lab</p>
           </div>
         </div>
-
-        {/* Action Buttons: Raise Hand & Call Professor */}
         <div className="flex items-center gap-3">
-          {/* Raise Hand Toggle */}
-          <button
-            onClick={handleToggleHand}
-            className={`text-xs py-2.5 px-4 rounded-xl font-bold flex items-center gap-2 transition-all ${
-              handRaised
-                ? 'bg-gradient-to-r from-orange-500 to-amber-600 text-white shadow-[0_0_20px_rgba(249,115,22,0.5)] animate-bounce'
-                : 'bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-900'
-            }`}
-          >
+          <button onClick={toggleHand}
+            className={`text-xs py-2.5 px-4 rounded-xl font-bold flex items-center gap-2 transition-all ${handRaised ? 'bg-gradient-to-r from-orange-500 to-amber-600 text-white shadow-[0_0_20px_rgba(249,115,22,0.5)]' : 'bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-900'}`}>
             <Hand className="w-4 h-4" />
-            <span>
-              {handRaised
-                ? isArabic ? 'اليد مرفوعة (انتظر رد الأستاذ)' : isUrdu ? 'ہاتھ اٹھا ہے (پروفیسر کو مطلع کیا گیا)' : 'Hand Raised (Pending)'
-                : isArabic ? 'رفع اليد للاستفسار' : isUrdu ? 'ہاتھ اٹھائیں' : 'Raise Hand'}
-            </span>
+            <span>{handRaised ? (isArabic ? 'اليد مرفوعة' : isUrdu ? 'ہاتھ اٹھا ہے' : 'Hand Raised') : (isArabic ? 'رفع اليد' : isUrdu ? 'ہاتھ اٹھائیں' : 'Raise Hand')}</span>
           </button>
-
-          {/* Call Professor */}
-          <button
-            onClick={handleCallProfessor}
-            className="btn-gold text-xs py-2.5 px-4"
-            title="Request 1:1 Video/Audio Call with Professor"
-          >
-            <Phone className="w-4 h-4 text-black" />
-            <span>
-              {isArabic ? 'طلب محادثة الأستاذ' : isUrdu ? 'پروفیسر سے کال' : 'Call Professor'}
-            </span>
+          <button onClick={() => onStartCall('PROFESSOR', 'VIDEO')} className="btn-gold text-xs py-2.5 px-4" title="Call Professor (video)">
+            <Phone className="w-4 h-4 text-black" /><span>{isArabic ? 'اتصال بالأستاذ' : isUrdu ? 'پروفیسر سے کال' : 'Call Professor'}</span>
+          </button>
+          <button onClick={() => onStartCall('PROFESSOR', 'AUDIO')} className="btn-outline text-xs py-2.5 px-3" title="Audio-only call">
+            <Mic className="w-4 h-4 text-emerald-400" />
           </button>
         </div>
       </div>
 
-      {/* Main Student Workstation Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* Left Column: Arabic Language Exercises & Audio Lab (8 cols) */}
         <div className="lg:col-span-8 space-y-6">
-          
-          {/* Exercise Tabs */}
           <div className="glass-panel p-6">
             <div className="flex items-center justify-between border-b border-emerald-900/50 pb-4 mb-5">
               <div className="flex items-center gap-2">
                 <BookOpen className="w-5 h-5 text-emerald-400" />
-                <h3 className="text-base font-bold text-white font-arabic">
-                  {isArabic ? 'تمارين النطق والمحادثة اليومية' : 'Daily Arabic Practicum & Phonetics'}
-                </h3>
+                <h3 className="text-base font-bold text-white font-arabic">{isArabic ? 'تمارين النطق والمحادثة' : 'Daily Arabic Practicum'}</h3>
               </div>
-
               <div className="flex items-center gap-2 text-xs">
-                <button
-                  onClick={() => setActiveExerciseTab('quran')}
-                  className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
-                    activeExerciseTab === 'quran'
-                      ? 'bg-emerald-600 text-white shadow'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Phonetics (التجويد)
-                </button>
-                <button
-                  onClick={() => setActiveExerciseTab('dialogue')}
-                  className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
-                    activeExerciseTab === 'dialogue'
-                      ? 'bg-emerald-600 text-white shadow'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Dialogue (الحوار)
-                </button>
-                <button
-                  onClick={() => setActiveExerciseTab('grammar')}
-                  className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${
-                    activeExerciseTab === 'grammar'
-                      ? 'bg-emerald-600 text-white shadow'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  Grammar (النحو)
-                </button>
+                {(['quran', 'dialogue', 'grammar'] as const).map((t) => (
+                  <button key={t} onClick={() => setActiveExerciseTab(t)}
+                    className={`px-3 py-1.5 rounded-lg font-semibold transition-all ${activeExerciseTab === t ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'}`}>
+                    {t === 'quran' ? 'Phonetics' : t === 'dialogue' ? 'Dialogue' : 'Grammar'}
+                  </button>
+                ))}
               </div>
             </div>
-
-            {/* Exercise Content */}
             {activeExerciseTab === 'quran' && (
-              <div className="space-y-4">
-                <div className="p-5 rounded-xl bg-emerald-950/40 border border-emerald-500/20 text-right">
-                  <span className="text-[11px] font-bold text-amber-400 bg-amber-950/60 px-2 py-0.5 rounded mb-3 inline-block font-sans">
-                    تمرين مخارج الحروف — حرف الضاد والقاف
-                  </span>
-                  <p className="text-2xl font-quran leading-relaxed text-emerald-100 my-2">
-                    « وَلَا الضَّالِّينَ • قُلْ أَعُوذُ بِرَبِّ الفَلَقِ • مِنْ شَرِّ مَا خَلَقَ »
-                  </p>
-                  <p className="text-xs text-slate-400 mt-2 font-sans text-left">
-                    <strong>Instructions:</strong> Read the verses aloud into your headset. Keep your articulation sharp at the back of the palate.
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between p-3 rounded-lg bg-black/40 border border-emerald-900/40">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-emerald-900/60 text-emerald-400 flex items-center justify-center">
-                      <Volume2 className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-white">Audio Model Pronunciation</div>
-                      <div className="text-[10px] text-slate-400">Master Recitation Sample (0:45)</div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => alert('Playing pronunciation audio sample...')}
-                    className="btn-outline text-xs py-1.5 px-3"
-                  >
-                    Play Audio Sample
-                  </button>
-                </div>
+              <div className="p-5 rounded-xl bg-emerald-950/40 border border-emerald-500/20 text-right">
+                <span className="text-[11px] font-bold text-amber-400 bg-amber-950/60 px-2 py-0.5 rounded mb-3 inline-block font-sans">تمرين مخارج الحروف</span>
+                <p className="text-2xl font-quran leading-relaxed text-emerald-100 my-2">« وَلَا الضَّالِّينَ • قُلْ أَعُوذُ بِرَبِّ الفَلَقِ »</p>
+                <p className="text-xs text-slate-400 mt-2 font-sans text-left"><strong>Instructions:</strong> Read aloud into your headset. When the professor sends a practice audio, it appears above with play / pause / repeat controls.</p>
               </div>
             )}
-
             {activeExerciseTab === 'dialogue' && (
-              <div className="space-y-3 text-right">
-                <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-900/40">
-                  <div className="text-xs font-bold text-emerald-400 mb-2 font-sans text-left">
-                    Role Play: At the International Airport (في المطار الدولي)
-                  </div>
-                  <div className="space-y-2 text-base font-arabic">
-                    <p className="text-amber-200">
-                      <strong>الطالب أ:</strong> أَهْلًا وَسَهْلًا، هَلْ هَذِهِ رِحْلَةُ الرِّيَاضِ؟
-                    </p>
-                    <p className="text-emerald-200">
-                      <strong>الطالب ب:</strong> نَعَمْ، يَرْجُو مِنْكَ التَّوَجُّهَ إِلَى البَوَّابَةِ رَقْمِ ٧.
-                    </p>
-                  </div>
-                </div>
+              <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-900/40 text-right space-y-2 text-base font-arabic">
+                <p className="text-amber-200"><strong>الطالب أ:</strong> أَهْلًا وَسَهْلًا، هَلْ هَذِهِ رِحْلَةُ الرِّيَاضِ؟</p>
+                <p className="text-emerald-200"><strong>الطالب ب:</strong> نَعَمْ، تَوَجَّهْ إِلَى البَوَّابَةِ رَقْمِ ٧.</p>
               </div>
             )}
-
             {activeExerciseTab === 'grammar' && (
-              <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-900/40 space-y-2 text-right">
-                <div className="text-xs font-bold text-emerald-400 mb-2 font-sans text-left">
-                  Grammar Rule: Subject & Predicate (المبتدأ والخبر)
-                </div>
-                <p className="text-lg font-arabic text-emerald-200">
-                  « اللُّغَةُ العَرَبِيَّةُ جَمِيلَةٌ » — المبتدأ: اللغةُ (مرفوع بالضمة)، الخبر: جميلةٌ.
-                </p>
+              <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-900/40 text-right">
+                <p className="text-lg font-arabic text-emerald-200">« اللُّغَةُ العَرَبِيَّةُ جَمِيلَةٌ » — المبتدأ: اللغةُ، الخبر: جميلةٌ.</p>
               </div>
             )}
           </div>
 
-          {/* Physical Windows Hardware Connect & Mic Telemetry */}
           <div className="glass-panel p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-xs font-bold text-slate-200">
-                <Mic className="w-4 h-4 text-emerald-400" />
-                <span>Live Headphone Microphone & Webcam Detection</span>
-              </div>
-
-              {/* Hardware Toggle Button */}
-              <button
-                onClick={handleToggleHardware}
-                className={`text-xs py-2 px-3.5 rounded-lg font-bold flex items-center gap-2 transition-all ${
-                  isHardwareActive
-                    ? 'bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)]'
-                    : 'bg-emerald-950/90 border border-emerald-500/50 text-emerald-300 hover:bg-emerald-900'
-                }`}
-              >
-                {isHardwareActive ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
-                <span>
-                  {isHardwareActive
-                    ? '✓ Physical Headphone & Webcam Connected'
-                    : '🔌 Connect Windows Headphone & Webcam'}
-                </span>
-              </button>
+              <div className="flex items-center gap-2 text-xs font-bold text-slate-200"><Mic className="w-4 h-4 text-emerald-400" /><span>Headset Microphone & Webcam</span></div>
+              <span className={`text-xs py-2 px-3.5 rounded-lg font-bold flex items-center gap-2 ${hardwareOk ? 'bg-emerald-600 text-white' : 'bg-red-950/70 border border-red-500/40 text-red-300'}`}>
+                {hardwareOk ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
+                <span>{hardwareOk ? 'Mic & Webcam Connected' : 'Devices Not Ready'}</span>
+              </span>
             </div>
-
-            {/* Hardware Selectors when active */}
-            {isHardwareActive && (
-              <div className="p-3 bg-black/50 rounded-xl border border-emerald-900/50 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1">Detected Microphone / Headset:</label>
-                  <select
-                    value={selectedAudioId}
-                    onChange={(e) => setSelectedAudioId(e.target.value)}
-                    className="w-full bg-slate-900 border border-emerald-900/60 rounded p-1.5 text-xs text-white"
-                  >
-                    {audioDevices.length > 0 ? (
-                      audioDevices.map((d, i) => (
-                        <option key={d.deviceId || i} value={d.deviceId}>
-                          {d.label || `Microphone ${i + 1}`}
-                        </option>
-                      ))
-                    ) : (
-                      <option value="">Default Windows Headphone Mic</option>
-                    )}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-[11px] text-slate-400 block mb-1">Detected Webcam:</label>
-                  <select
-                    value={selectedVideoId}
-                    onChange={(e) => setSelectedVideoId(e.target.value)}
-                    className="w-full bg-slate-900 border border-emerald-900/60 rounded p-1.5 text-xs text-white"
-                  >
-                    {videoDevices.length > 0 ? (
-                      videoDevices.map((d, i) => (
-                        <option key={d.deviceId || i} value={d.deviceId}>
-                          {d.label || `Webcam ${i + 1}`}
-                        </option>
-                      ))
-                    ) : (
-                      <option value="">Default Windows Camera</option>
-                    )}
-                  </select>
-                </div>
+            {hardwareError && (
+              <div className="text-xs text-red-300 bg-red-950/40 border border-red-500/30 rounded-lg p-2 flex items-center justify-between gap-2">
+                <span>{hardwareError}</span>
+                <button onClick={retryHardware} className="btn-outline text-[11px] py-1 px-2 text-red-200">Retry</button>
               </div>
             )}
-
-            {/* Real-time VU Meter */}
             <div>
               <div className="flex items-center justify-between text-xs text-slate-300 mb-1.5">
-                <span className="text-[11px] font-semibold text-slate-400">
-                  {isHardwareActive ? 'Physical Microphone Input Level:' : 'Simulated Voice Level:'}
-                </span>
+                <span className="text-[11px] font-semibold text-slate-400">Live Microphone Level:</span>
                 <span className="font-mono text-emerald-400 font-bold">{micVolume}%</span>
               </div>
-
               <div className="grid grid-cols-20 gap-1 h-3">
                 {Array.from({ length: 20 }).map((_, idx) => {
-                  const threshold = (idx + 1) * 5;
-                  const active = micVolume >= threshold;
-                  return (
-                    <div
-                      key={idx}
-                      className={`h-full rounded-sm transition-all duration-100 ${
-                        active
-                          ? idx > 15
-                            ? 'bg-red-500 shadow-[0_0_6px_#ef4444]'
-                            : idx > 11
-                            ? 'bg-yellow-400'
-                            : 'bg-emerald-400 shadow-[0_0_4px_#34d399]'
-                          : 'bg-emerald-950/50'
-                      }`}
-                    />
-                  );
+                  const active = micVolume >= (idx + 1) * 5;
+                  return <div key={idx} className={`h-full rounded-sm transition-all duration-100 ${active ? (idx > 15 ? 'bg-red-500' : idx > 11 ? 'bg-yellow-400' : 'bg-emerald-400') : 'bg-emerald-950/50'}`} />;
                 })}
               </div>
             </div>
-
-            {/* Live Webcam Preview if hardware active */}
-            {isHardwareActive && (
-              <div className="flex items-center gap-4 pt-2 border-t border-emerald-900/40">
-                <div className="w-28 h-20 bg-black rounded-lg overflow-hidden border border-emerald-500/40 relative shrink-0">
-                  <video
-                    ref={webcamVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover"
-                  />
-                  <span className="absolute bottom-1 right-1 bg-black/80 text-emerald-400 text-[8px] font-bold px-1 rounded">
-                    LIVE
-                  </span>
-                </div>
-                <div className="text-xs text-slate-300">
-                  <div className="font-bold text-white mb-0.5">Physical Webcam Live Preview</div>
-                  <p className="text-[11px] text-slate-400">
-                    Your camera feed is streaming directly from Windows. Professor can view this in the circular PiP window during silent monitoring or video calls.
-                  </p>
-                </div>
+            <div className="flex items-center gap-4 pt-2 border-t border-emerald-900/40">
+              <div className="w-28 h-20 bg-black rounded-lg overflow-hidden border border-emerald-500/40 relative shrink-0">
+                <video ref={webcamVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+                <span className="absolute bottom-1 right-1 bg-black/80 text-emerald-400 text-[8px] font-bold px-1 rounded">LIVE</span>
               </div>
-            )}
+              <p className="text-[11px] text-slate-400">Your mic, webcam and desktop (with sound) are available to the professor for supervised teaching, per the lab Acceptable Use Policy you accepted at login.</p>
+            </div>
           </div>
         </div>
 
-        {/* Right Column: Peer Dialogue & AUP Status (4 cols) */}
         <div className="lg:col-span-4 space-y-6">
-          
-          {/* Peer-to-Peer Dialogue Partner */}
           <div className="glass-panel p-5 border-emerald-500/20">
-            <div className="flex items-center gap-2 mb-3">
-              <Users className="w-4 h-4 text-emerald-400" />
-              <h3 className="text-sm font-bold text-white font-arabic">
-                {isArabic ? 'محادثة ثنائية مع كابينة أخرى' : 'Peer Dialogue Practice'}
-              </h3>
-            </div>
-            <p className="text-xs text-slate-400 mb-4">
-              Connect 1:1 with another student cabin to practice Arabic dialogue drills over LAN.
-            </p>
-
+            <div className="flex items-center gap-2 mb-3"><Users className="w-4 h-4 text-emerald-400" /><h3 className="text-sm font-bold text-white font-arabic">{isArabic ? 'محادثة مع كابينة أخرى' : 'Peer Dialogue Practice'}</h3></div>
+            <p className="text-xs text-slate-400 mb-4">Connect 1:1 with another cabin to practice Arabic dialogue over LAN.</p>
             <div className="space-y-3">
-              <label className="text-xs font-semibold text-slate-300 block">
-                Select Peer Cabin:
-              </label>
-
-              <select
-                value={selectedPeerCabin}
-                onChange={(e) => setSelectedPeerCabin(Number(e.target.value))}
-                className="w-full bg-slate-900 border border-emerald-900/60 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-emerald-400"
-              >
-                {Array.from({ length: 25 }).map((_, i) => {
-                  const num = i + 1;
-                  if (num === cabinNumber) return null;
-                  return (
-                    <option key={num} value={num}>
-                      Cabin {String(num).padStart(2, '0')}
-                    </option>
-                  );
-                })}
+              <select value={selectedPeerCabin} onChange={(e) => setSelectedPeerCabin(Number(e.target.value))}
+                className="w-full bg-slate-900 border border-emerald-900/60 rounded-lg p-2 text-xs text-white focus:outline-none focus:border-emerald-400">
+                {Array.from({ length: 25 }).map((_, i) => { const n = i + 1; if (n === cabinNumber) return null; return <option key={n} value={n}>Cabin {String(n).padStart(2, '0')}</option>; })}
               </select>
-
-              <button
-                onClick={handleConnectPeer}
-                className="btn-primary w-full text-xs py-2.5"
-              >
-                <Video className="w-4 h-4" />
-                <span>Connect to Cabin {String(selectedPeerCabin).padStart(2, '0')}</span>
+              <button onClick={() => onStartCall(selectedPeerCabin, 'VIDEO')} className="btn-primary w-full text-xs py-2.5">
+                <Video className="w-4 h-4" /><span>Connect to Cabin {String(selectedPeerCabin).padStart(2, '0')}</span>
               </button>
             </div>
           </div>
-
-          {/* University AUP Policy Consent Box */}
           <div className="glass-card p-4 border-emerald-900/40">
-            <div className="flex items-center gap-2 text-xs font-bold text-emerald-300 mb-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
-              <span>Lab Acceptable Use Policy (AUP)</span>
-            </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              As part of teaching, workstations are monitored by the professor for pronunciation assessment and lab safety.
-            </p>
-            <div className="mt-3 text-[10px] text-emerald-400 font-mono flex items-center gap-1">
-              <CheckCircle className="w-3.5 h-3.5" />
-              <span>Consent Signed on First Login</span>
-            </div>
+            <div className="flex items-center gap-2 text-xs font-bold text-emerald-300 mb-2"><ShieldCheck className="w-4 h-4 text-emerald-400" /><span>Lab Acceptable Use Policy</span></div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">Workstations are supervised by the professor for pronunciation assessment and lab safety, as acknowledged at login.</p>
           </div>
         </div>
       </div>
 
-      {/* Live Classroom Broadcast Theater Player */}
-      {broadcastActive && showBroadcastViewer && (
+      {broadcast && (
         <BroadcastViewerModal
-          broadcastData={broadcastData}
-          onClose={() => setShowBroadcastViewer(false)}
+          professorSocketId={broadcast.professorSocketId}
+          cabinNumber={cabinNumber}
+          title={broadcast.title}
+          onClose={() => setBroadcast(null)}
           language={language}
         />
       )}

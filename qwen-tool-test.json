@@ -1,0 +1,36 @@
+﻿{
+  "model": "cfp/qwen/qwen2.5-coder-32b-instruct",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the list_files tool now. Do not describe what you would do. Actually call the tool."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "list_files",
+        "description": "List files in a directory",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Directory path"
+            }
+          },
+          "required": ["path"]
+        }
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "function",
+    "function": {
+      "name": "list_files"
+    }
+  },
+  "stream": false,
+  "max_tokens": 300
+}

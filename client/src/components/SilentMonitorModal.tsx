@@ -1,13 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Cabin, User, Language } from '../types';
-import {
-  X, Eye, Camera, CameraOff, Volume2, VolumeX, Disc,
-  CheckCircle, ChevronLeft, ChevronRight, Video, ShieldAlert, Download,
-  Maximize2, Minimize2
-} from 'lucide-react';
-import { renderMockWorkstation, renderOfflineWorkstation } from '../services/screenSimulators';
+import { X, Eye, Camera, CameraOff, Volume2, VolumeX, Disc, CheckCircle, ChevronLeft, ChevronRight, Video, Maximize2, Minimize2 } from 'lucide-react';
+import { renderOfflineWorkstation } from '../services/screenSimulators';
 import { uploadRecording, logAudit } from '../services/api';
 import { socket } from '../services/socket';
+import { createPeer, closePeer } from '../services/rtcEngine';
 
 interface SilentMonitorModalProps {
   cabin: Cabin;
@@ -20,577 +17,217 @@ interface SilentMonitorModalProps {
 }
 
 export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
-  cabin,
-  onClose,
-  onNextCabin,
-  onPrevCabin,
-  onStartCall,
-  currentUser,
-  language,
+  cabin, onClose, onNextCabin, onPrevCabin, onStartCall, currentUser, language,
 }) => {
   const isArabic = language === 'ar';
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mainVideoRef = useRef<HTMLVideoElement | null>(null);
+  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
+  const screenStreamInRef = useRef<MediaStream | null>(null);
 
-  // States
-  const [isWebcamActive, setIsWebcamActive] = useState<boolean>(cabin.isWebcamActive ?? true);
+  const [isWebcamActive, setIsWebcamActive] = useState(true);
   const [isAudioListening, setIsAudioListening] = useState(true);
-  const [listenVolume, setListenVolume] = useState(80);
-  const [pipPosition, setPipPosition] = useState({ x: 30, y: 30 });
-  const [isDragging, setIsDragging] = useState(false);
-  const dragStartRef = useRef({ mouseX: 0, mouseY: 0, initialX: 0, initialY: 0 });
+  const [hasLiveVideo, setHasLiveVideo] = useState(false);
+  const [hasWebcam, setHasWebcam] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [liveScreenData, setLiveScreenData] = useState<string | null>(cabin.screenData || null);
+  const [isCabinOnline, setIsCabinOnline] = useState<boolean>(cabin.online ?? false);
 
-  // Recording State
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'uploading' | 'saved'>('idle');
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recordTimerRef = useRef<number | null>(null);
+  const modalRef = useRef<HTMLDivElement | null>(null);
 
-  // Log compliance audit on open
-  const modalContainerRef = useRef<HTMLDivElement | null>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const sessionId = `monitor:${cabin.cabinNumber}:${socket.id}`;
 
-  // Fullscreen Handlers
-  const handleToggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      if (modalContainerRef.current?.requestFullscreen) {
-        modalContainerRef.current.requestFullscreen().catch(() => setIsFullscreen(true));
-      } else {
-        setIsFullscreen(!isFullscreen);
-      }
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen().catch(() => setIsFullscreen(false));
-      } else {
-        setIsFullscreen(false);
-      }
-    }
-  };
-
+  // Subscribe to the cabin's live A/V over WebRTC
   useEffect(() => {
-    const handleFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
-    };
-    document.addEventListener('fullscreenchange', handleFsChange);
-    return () => document.removeEventListener('fullscreenchange', handleFsChange);
-  }, []);
-
-  // Live Screen & Audio Surveillance States
-  const [liveScreenData, setLiveScreenData] = useState<string | null>(cabin.screenData || null);
-  const [liveWebcamFrame, setLiveWebcamFrame] = useState<string | null>(null);
-  const [isCabinOnline, setIsCabinOnline] = useState<boolean>(cabin.online ?? false);
-  const [currentAudioLevel, setCurrentAudioLevel] = useState<number>(cabin.audioLevel || 0);
-  const monitorAudioCtxRef = useRef<AudioContext | null>(null);
-
-  // Sync when cabin prop changes
-  useEffect(() => {
-    setLiveScreenData(cabin.screenData || null);
-    setIsCabinOnline(cabin.online ?? false);
-    setCurrentAudioLevel(cabin.audioLevel || 0);
-  }, [cabin.cabinNumber, cabin.screenData, cabin.online, cabin.audioLevel]);
-
-  // Real-Time Socket Stream Listeners for Active Single-Cabin View
-  useEffect(() => {
-    const handleScreenUpdate = (data: { cabinNumber: number; screenData: string }) => {
-      if (data.cabinNumber === cabin.cabinNumber) {
-        setLiveScreenData(data.screenData);
-        setIsCabinOnline(true);
-      }
-    };
-
-    const handleWebcamUpdate = (data: { cabinNumber: number; webcamData: string }) => {
-      if (data.cabinNumber === cabin.cabinNumber) {
-        setLiveWebcamFrame(data.webcamData);
-      }
-    };
-
-    const handleAudioLevel = (data: { cabinNumber: number; level: number }) => {
-      if (data.cabinNumber === cabin.cabinNumber) {
-        setCurrentAudioLevel(data.level);
-        setIsCabinOnline(true);
-      }
-    };
-
-    const handleCabinUpdated = (updated: any) => {
-      if (updated.cabinNumber === cabin.cabinNumber) {
-        setIsCabinOnline(Boolean(updated.online));
-        if (updated.screenData) {
-          setLiveScreenData(updated.screenData);
-        } else if (!updated.online) {
-          setLiveScreenData(null);
+    setHasLiveVideo(false);
+    setHasWebcam(false);
+    createPeer({
+      sessionId,
+      remoteSocketId: cabin.socketId || '',
+      purpose: 'monitor',
+      polite: true,
+      onTrack: (stream) => {
+        const hasAudio = stream.getAudioTracks().length > 0;
+        if (hasAudio) {
+          screenStreamInRef.current = stream;
+          if (mainVideoRef.current) {
+            mainVideoRef.current.srcObject = stream;
+            mainVideoRef.current.muted = !isAudioListening;
+            mainVideoRef.current.play().catch(() => {});
+          }
+          if (stream.getVideoTracks().length > 0) setHasLiveVideo(true);
+        } else if (stream.getVideoTracks().length > 0) {
+          if (pipVideoRef.current) { pipVideoRef.current.srcObject = stream; pipVideoRef.current.play().catch(() => {}); }
+          setHasWebcam(true);
         }
-      }
-    };
-
-    // Play incoming audio chunks from student microphone through Professor speakers
-    const handleSilentAudio = (data: { cabinNumber: number; chunk: string }) => {
-      if (data.cabinNumber === cabin.cabinNumber && isAudioListening && data.chunk) {
-        try {
-          const binary = atob(data.chunk);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-          if (!monitorAudioCtxRef.current && AudioCtx) {
-            monitorAudioCtxRef.current = new AudioCtx();
-          }
-          if (monitorAudioCtxRef.current && monitorAudioCtxRef.current.state === 'suspended') {
-            monitorAudioCtxRef.current.resume();
-          }
-          if (monitorAudioCtxRef.current) {
-            monitorAudioCtxRef.current.decodeAudioData(
-              bytes.buffer.slice(0),
-              (buffer) => {
-                if (monitorAudioCtxRef.current) {
-                  const source = monitorAudioCtxRef.current.createBufferSource();
-                  source.buffer = buffer;
-                  source.connect(monitorAudioCtxRef.current.destination);
-                  source.start(0);
-                }
-              },
-              () => {}
-            );
-          }
-        } catch (_) {}
-      }
-    };
-
-    socket.on('cabin-screen-update', handleScreenUpdate);
-    socket.on('cabin-webcam-update', handleWebcamUpdate);
-    socket.on('cabin-audio-level', handleAudioLevel);
-    socket.on('cabin-updated', handleCabinUpdated);
-    socket.on('incoming-silent-audio', handleSilentAudio);
-
-    return () => {
-      socket.off('cabin-screen-update', handleScreenUpdate);
-      socket.off('cabin-webcam-update', handleWebcamUpdate);
-      socket.off('cabin-audio-level', handleAudioLevel);
-      socket.off('cabin-updated', handleCabinUpdated);
-      socket.off('incoming-silent-audio', handleSilentAudio);
-    };
-  }, [cabin.cabinNumber, isAudioListening]);
-
-  // Request / Stop Silent Audio from Student
-  useEffect(() => {
-    socket.emit('request-silent-audio', { cabinNumber: cabin.cabinNumber, enabled: isAudioListening });
-    return () => {
-      socket.emit('request-silent-audio', { cabinNumber: cabin.cabinNumber, enabled: false });
-      if (monitorAudioCtxRef.current && monitorAudioCtxRef.current.state !== 'closed') {
-        monitorAudioCtxRef.current.close().catch(() => {});
-        monitorAudioCtxRef.current = null;
-      }
-    };
-  }, [cabin.cabinNumber, isAudioListening]);
-
-  // Activate 25 FPS 1080p Surveillance on Single View Mount
-  useEffect(() => {
-    logAudit(cabin.cabinNumber, 'SCREEN_VIEW').catch(() => {});
-    socket.emit('request-silent-monitor', { cabinNumber: cabin.cabinNumber });
-    socket.emit('start-active-surveillance', {
-      cabinNumber: cabin.cabinNumber,
-      fps: 25,
-      width: 1920,
-      height: 1080,
+      },
     });
+    logAudit(cabin.cabinNumber, 'SCREEN_VIEW').catch(() => {});
+    socket.emit('monitor:request', { cabinNumber: cabin.cabinNumber, sessionId });
 
     return () => {
-      socket.emit('stop-silent-monitor', { cabinNumber: cabin.cabinNumber });
-      socket.emit('stop-active-surveillance', { cabinNumber: cabin.cabinNumber });
+      socket.emit('monitor:stop', { cabinNumber: cabin.cabinNumber, sessionId });
+      closePeer(sessionId);
+      screenStreamInRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cabin.cabinNumber, cabin.socketId]);
+
+  // Keep thumbnail/presence fresh as fallback before live video connects
+  useEffect(() => {
+    const onScreen = (d: { cabinNumber: number; screenData: string }) => { if (d.cabinNumber === cabin.cabinNumber) { setLiveScreenData(d.screenData); setIsCabinOnline(true); } };
+    const onUpdated = (u: any) => { if (u.cabinNumber === cabin.cabinNumber) setIsCabinOnline(Boolean(u.online)); };
+    socket.on('cabin-screen-update', onScreen);
+    socket.on('cabin-updated', onUpdated);
+    return () => { socket.off('cabin-screen-update', onScreen); socket.off('cabin-updated', onUpdated); };
   }, [cabin.cabinNumber]);
 
-  // Animate screen canvas fallback when offline
+  // Audio listen toggle
+  useEffect(() => { if (mainVideoRef.current) mainVideoRef.current.muted = !isAudioListening; }, [isAudioListening]);
+
+  // Offline canvas fallback
   useEffect(() => {
-    let active = true;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    let startTime = Date.now();
-    let animId: number;
-
+    if (hasLiveVideo || liveScreenData) return;
+    const canvas = canvasRef.current; if (!canvas) return;
+    const ctx = canvas.getContext('2d'); if (!ctx) return;
+    let active = true; let animId = 0;
     const render = () => {
       if (!active) return;
-      if (isCabinOnline && liveScreenData) {
-        animId = requestAnimationFrame(render);
-        return;
-      }
-      const elapsed = (Date.now() - startTime) / 1000;
-      if (isCabinOnline) {
-        renderMockWorkstation(
-          ctx,
-          canvas.width,
-          canvas.height,
-          cabin.cabinNumber,
-          cabin.student?.name || `Student ${cabin.cabinNumber}`,
-          elapsed,
-          currentAudioLevel > 15
-        );
-      } else {
-        renderOfflineWorkstation(
-          ctx,
-          canvas.width,
-          canvas.height,
-          cabin.cabinNumber,
-          cabin.student?.name || `Student ${cabin.cabinNumber}`,
-          isArabic
-        );
-      }
+      renderOfflineWorkstation(ctx, canvas.width, canvas.height, cabin.cabinNumber, cabin.student?.name || `Student ${cabin.cabinNumber}`, isArabic);
       animId = requestAnimationFrame(render);
     };
-
     render();
+    return () => { active = false; cancelAnimationFrame(animId); };
+  }, [hasLiveVideo, liveScreenData, cabin.cabinNumber, cabin.student?.name, isArabic]);
 
-    return () => {
-      active = false;
-      cancelAnimationFrame(animId);
-    };
-  }, [cabin.cabinNumber, cabin.student?.name, currentAudioLevel, isCabinOnline, liveScreenData, isArabic]);
-
-  // Toggle Webcam
-  const handleToggleWebcam = () => {
-    const nextState = !isWebcamActive;
-    setIsWebcamActive(nextState);
-    socket.emit('toggle-student-webcam', {
-      cabinNumber: cabin.cabinNumber,
-      enabled: nextState,
-    });
-    if (nextState) {
-      logAudit(cabin.cabinNumber, 'WEBCAM_VIEW').catch(() => {});
-    }
+  // Fullscreen
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) modalRef.current?.requestFullscreen?.().catch(() => setIsFullscreen(true));
+    else document.exitFullscreen?.().catch(() => setIsFullscreen(false));
   };
-
-  // PiP Dragging Handlers
-  const handleMouseDown = (e: React.MouseEvent) => {
-    setIsDragging(true);
-    dragStartRef.current = {
-      mouseX: e.clientX,
-      mouseY: e.clientY,
-      initialX: pipPosition.x,
-      initialY: pipPosition.y,
-    };
-  };
-
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
-      const dx = e.clientX - dragStartRef.current.mouseX;
-      const dy = e.clientY - dragStartRef.current.mouseY;
-      setPipPosition({
-        x: Math.max(10, Math.min(window.innerWidth - 200, dragStartRef.current.initialX + dx)),
-        y: Math.max(10, Math.min(window.innerHeight - 200, dragStartRef.current.initialY + dy)),
-      });
-    };
+    const h = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener('fullscreenchange', h);
+    return () => document.removeEventListener('fullscreenchange', h);
+  }, []);
 
-    const handleMouseUp = () => {
-      setIsDragging(false);
-    };
-
-    if (isDragging) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-    }
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [isDragging]);
-
-  // Recording Logic
-  const handleToggleRecording = async () => {
-    if (isRecording) {
-      // Stop Recording
-      stopRecording();
-    } else {
-      // Start Recording
-      startRecording();
-    }
+  const toggleWebcam = () => {
+    const next = !isWebcamActive;
+    setIsWebcamActive(next);
+    if (next) logAudit(cabin.cabinNumber, 'WEBCAM_VIEW').catch(() => {});
   };
 
+  // Recording: capture the REAL inbound live stream (video + audio)
   const startRecording = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
+    const stream = screenStreamInRef.current;
+    if (!stream || stream.getTracks().length === 0) { console.warn('No live stream to record yet'); return; }
     try {
-      const stream = canvas.captureStream(30);
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-          ? 'video/webm;codecs=vp9'
-          : 'video/webm',
-      });
-
+      const mr = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus' : 'video/webm' });
       recordedChunksRef.current = [];
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorder.onstop = async () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
-        await saveRecordingToServer(blob);
-      };
-
-      mediaRecorder.start(1000);
-      mediaRecorderRef.current = mediaRecorder;
-      setIsRecording(true);
-      setRecordingSeconds(0);
-
-      recordTimerRef.current = window.setInterval(() => {
-        setRecordingSeconds((prev) => prev + 1);
-      }, 1000);
-    } catch (err) {
-      console.error('Failed to start recording:', err);
-    }
+      mr.ondataavailable = (e) => { if (e.data?.size > 0) recordedChunksRef.current.push(e.data); };
+      mr.onstop = async () => { await saveRecording(new Blob(recordedChunksRef.current, { type: 'video/webm' })); };
+      mr.start(1000);
+      mediaRecorderRef.current = mr;
+      setIsRecording(true); setRecordingSeconds(0);
+      recordTimerRef.current = window.setInterval(() => setRecordingSeconds((p) => p + 1), 1000);
+    } catch (e) { console.error('Recording failed:', e); }
   };
-
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-    }
-    if (recordTimerRef.current) {
-      clearInterval(recordTimerRef.current);
-      recordTimerRef.current = null;
-    }
+    if (mediaRecorderRef.current?.state !== 'inactive') mediaRecorderRef.current?.stop();
+    if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+    recordTimerRef.current = null;
     setIsRecording(false);
   };
-
-  const saveRecordingToServer = async (blob: Blob) => {
+  const saveRecording = async (blob: Blob) => {
     try {
       setUploadStatus('uploading');
-      const formData = new FormData();
-      const cabinPad = String(cabin.cabinNumber).padStart(2, '0');
-      const title = `Cabin ${cabinPad} (${cabin.student?.name || 'Student'}) - Silent Monitor Recording`;
-      formData.append('video', blob, `cabin_${cabinPad}_rec_${Date.now()}.webm`);
-      formData.append('title', title);
-      formData.append('durationSec', String(recordingSeconds));
-      formData.append('cabinNumber', String(cabin.cabinNumber));
-      if (cabin.student?.id) formData.append('studentId', cabin.student.id);
-
-      await uploadRecording(formData);
-      setUploadStatus('saved');
-      setTimeout(() => setUploadStatus('idle'), 4000);
-    } catch (err) {
-      console.error('Upload failed:', err);
-      setUploadStatus('idle');
-    }
+      const fd = new FormData();
+      const pad = String(cabin.cabinNumber).padStart(2, '0');
+      fd.append('video', blob, `cabin_${pad}_rec_${Date.now()}.webm`);
+      fd.append('title', `Cabin ${pad} (${cabin.student?.name || 'Student'}) - Monitor Recording`);
+      fd.append('durationSec', String(recordingSeconds));
+      fd.append('cabinNumber', String(cabin.cabinNumber));
+      if (cabin.student?.id) fd.append('studentId', cabin.student.id);
+      await uploadRecording(fd);
+      setUploadStatus('saved'); setTimeout(() => setUploadStatus('idle'), 4000);
+    } catch (e) { console.error('Upload failed:', e); setUploadStatus('idle'); }
   };
 
-  const formatTime = (totalSec: number) => {
-    const mins = Math.floor(totalSec / 60);
-    const secs = totalSec % 60;
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-  };
-
-  const cabinPad = String(cabin.cabinNumber).padStart(2, '0');
+  const fmt = (t: number) => `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+  const pad = String(cabin.cabinNumber).padStart(2, '0');
 
   return (
     <div className="modal-backdrop">
-      <div
-        ref={modalContainerRef}
-        className={`glass-panel-elevated w-full flex flex-col overflow-hidden relative border border-cyan-500/30 shadow-[0_0_50px_rgba(6,182,212,0.15)] transition-all ${
-          isFullscreen
-            ? 'fixed inset-0 z-50 w-screen h-screen max-w-none max-h-none rounded-none'
-            : 'max-w-6xl max-h-[92vh]'
-        }`}
-      >
-        
-        {/* Top Monitor Bar */}
+      <div ref={modalRef} className={`glass-panel-elevated w-full flex flex-col overflow-hidden relative border border-cyan-500/30 shadow-[0_0_50px_rgba(6,182,212,0.15)] ${isFullscreen ? 'fixed inset-0 z-50 w-screen h-screen max-w-none rounded-none' : 'max-w-6xl max-h-[92vh]'}`}>
         <div className="px-6 py-3.5 bg-slate-950/80 border-b border-emerald-900/50 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-500/40 flex items-center justify-center">
-              <Eye className="w-4 h-4" />
-            </div>
+            <div className="w-8 h-8 rounded-lg bg-cyan-950 text-cyan-400 border border-cyan-500/40 flex items-center justify-center"><Eye className="w-4 h-4" /></div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="font-heading font-black text-sm text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-500/30">
-                  CABIN {cabinPad}
-                </span>
+                <span className="font-heading font-black text-sm text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-500/30">CABIN {pad}</span>
                 <h2 className="text-base font-bold text-white">{cabin.student?.name}</h2>
-                <span className="text-xs text-slate-400 font-mono">(@{cabin.student?.username})</span>
               </div>
               <div className="flex items-center gap-2 text-[11px] text-emerald-400 mt-0.5">
                 <span className="pulse-dot bg-cyan-400" />
-                <span>{isArabic ? 'جلسة مراقبة صامتة (بدون تنبيه الطالب)' : 'Silent Monitor Session (Zero Student Alerts)'}</span>
+                <span>{hasLiveVideo ? (isArabic ? 'بث مباشر (WebRTC)' : 'Live A/V (WebRTC)') : (isArabic ? 'جارٍ الاتصال…' : 'Connecting live…')}</span>
               </div>
             </div>
           </div>
-
-          {/* Quick Cabin Navigator */}
           <div className="flex items-center gap-1.5 bg-emerald-950/40 p-1 rounded-lg border border-emerald-900/50">
-            <button
-              onClick={onPrevCabin}
-              disabled={!onPrevCabin}
-              className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 rounded hover:bg-emerald-900/40"
-              title="Previous Cabin"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <span className="text-xs font-mono font-bold text-emerald-300 px-2">
-              {cabin.cabinNumber} / 25
-            </span>
-            <button
-              onClick={onNextCabin}
-              disabled={!onNextCabin}
-              className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 rounded hover:bg-emerald-900/40"
-              title="Next Cabin"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
+            <button onClick={onPrevCabin} disabled={!onPrevCabin} className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 rounded"><ChevronLeft className="w-4 h-4" /></button>
+            <span className="text-xs font-mono font-bold text-emerald-300 px-2">{cabin.cabinNumber} / 25</span>
+            <button onClick={onNextCabin} disabled={!onNextCabin} className="p-1.5 text-slate-400 hover:text-white disabled:opacity-30 rounded"><ChevronRight className="w-4 h-4" /></button>
           </div>
-
-          {/* Universal Record & Audio Controls */}
           <div className="flex items-center gap-2">
-            {/* Record Button */}
-            <button
-              onClick={handleToggleRecording}
-              className={`text-xs py-2 px-3.5 rounded-lg font-bold flex items-center gap-2 transition-all ${
-                isRecording
-                  ? 'bg-red-600 text-white shadow-[0_0_16px_rgba(239,68,68,0.6)] animate-pulse'
-                  : 'bg-red-950/70 border border-red-500/40 text-red-300 hover:bg-red-900/70'
-              }`}
-            >
-              <Disc className={`w-4 h-4 ${isRecording ? 'animate-spin' : ''}`} />
-              <span>
-                {isRecording ? `REC ${formatTime(recordingSeconds)}` : (isArabic ? 'تسجيل الجلسة' : 'Record Session')}
-              </span>
+            <button onClick={() => (isRecording ? stopRecording() : startRecording())}
+              className={`text-xs py-2 px-3.5 rounded-lg font-bold flex items-center gap-2 ${isRecording ? 'bg-red-600 text-white shadow-[0_0_16px_rgba(239,68,68,0.6)] animate-pulse' : 'bg-red-950/70 border border-red-500/40 text-red-300 hover:bg-red-900/70'}`}>
+              <Disc className={`w-4 h-4 ${isRecording ? 'animate-spin' : ''}`} /><span>{isRecording ? `REC ${fmt(recordingSeconds)}` : (isArabic ? 'تسجيل' : 'Record')}</span>
             </button>
-
-            {uploadStatus === 'saved' && (
-              <span className="text-xs text-emerald-400 flex items-center gap-1">
-                <CheckCircle className="w-4 h-4" />
-                <span>{isArabic ? 'تم حفظ التسجيل' : 'Saved!'}</span>
-              </span>
-            )}
-
-            {/* Webcam PiP Toggle */}
-            <button
-              onClick={handleToggleWebcam}
-              className={`btn-outline text-xs py-2 px-3 ${
-                isWebcamActive ? 'border-cyan-500/60 text-cyan-300 bg-cyan-950/40' : 'text-slate-400'
-              }`}
-              title="Toggle Student Webcam PiP Overlay"
-            >
-              {isWebcamActive ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}
-              <span>{isArabic ? 'الكاميرا' : 'Webcam'}</span>
+            {uploadStatus === 'saved' && <span className="text-xs text-emerald-400 flex items-center gap-1"><CheckCircle className="w-4 h-4" />{isArabic ? 'حُفظ' : 'Saved!'}</span>}
+            <button onClick={toggleWebcam} className={`btn-outline text-xs py-2 px-3 ${isWebcamActive ? 'border-cyan-500/60 text-cyan-300 bg-cyan-950/40' : 'text-slate-400'}`}>
+              {isWebcamActive ? <Camera className="w-4 h-4" /> : <CameraOff className="w-4 h-4" />}<span>{isArabic ? 'الكاميرا' : 'Webcam'}</span>
             </button>
-
-            {/* Listen Audio Mute/Unmute */}
-            <button
-              onClick={() => setIsAudioListening(!isAudioListening)}
-              className={`btn-outline text-xs py-2 px-3 ${
-                isAudioListening ? 'text-emerald-300' : 'text-slate-500'
-              }`}
-              title="Listen to student microphone"
-            >
-              {isAudioListening ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
-              <span>{isAudioListening ? (isArabic ? 'الاستماع نشط' : 'Listening') : (isArabic ? 'كتم الصوت' : 'Muted')}</span>
+            <button onClick={() => setIsAudioListening(!isAudioListening)} className={`btn-outline text-xs py-2 px-3 ${isAudioListening ? 'text-emerald-300' : 'text-slate-500'}`}>
+              {isAudioListening ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}<span>{isAudioListening ? (isArabic ? 'استماع' : 'Listening') : (isArabic ? 'صامت' : 'Muted')}</span>
             </button>
-
-            {/* Direct Call Button */}
-            <button
-              onClick={() => onStartCall(cabin, 'VIDEO')}
-              className="btn-gold text-xs py-2 px-3"
-              title="Switch to 1:1 Video Call with this student"
-            >
-              <Video className="w-4 h-4 text-black" />
-              <span>{isArabic ? 'بدء مكالمة' : '1:1 Call'}</span>
-            </button>
-
-            {/* Fullscreen Monitor Toggle */}
-            <button
-              onClick={handleToggleFullscreen}
-              className={`btn-outline text-xs py-2 px-3 flex items-center gap-1 ${
-                isFullscreen ? 'border-emerald-500/60 text-emerald-300 bg-emerald-950/40' : 'text-slate-300'
-              }`}
-              title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen Monitor (1080p Edge-to-Edge)'}
-            >
-              {isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-              <span>{isFullscreen ? (isArabic ? 'تصغير' : 'Exit') : (isArabic ? 'ملء الشاشة' : 'Fullscreen')}</span>
-            </button>
-
-            {/* Close Button */}
-            <button
-              onClick={onClose}
-              className="btn-icon text-slate-400 hover:text-white"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <button onClick={() => onStartCall(cabin, 'VIDEO')} className="btn-gold text-xs py-2 px-3"><Video className="w-4 h-4 text-black" /><span>{isArabic ? 'مكالمة' : '1:1 Call'}</span></button>
+            <button onClick={toggleFullscreen} className="btn-outline text-xs py-2 px-3 text-slate-300">{isFullscreen ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}</button>
+            <button onClick={onClose} className="btn-icon text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
           </div>
         </div>
 
-        {/* Main Monitor Display Area */}
         <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center min-h-[500px]">
-          {/* Real-time screen canvas or real student desktop */}
-          {isCabinOnline && liveScreenData ? (
-            <img
-              src={liveScreenData}
-              alt={`Cabin ${cabinPad} Real-Time Desktop Surveillance`}
-              className={`w-full h-full object-contain shadow-2xl ${
-                isFullscreen ? 'max-h-screen' : 'max-h-[75vh]'
-              }`}
-            />
+          {/* Live WebRTC video */}
+          <video ref={mainVideoRef} autoPlay playsInline className={`w-full h-full object-contain ${hasLiveVideo ? 'block' : 'hidden'} ${isFullscreen ? 'max-h-screen' : 'max-h-[75vh]'}`} />
+          {/* Fallback: last thumbnail or offline canvas */}
+          {!hasLiveVideo && (liveScreenData && isCabinOnline ? (
+            <img src={liveScreenData} alt={`Cabin ${pad}`} className={`w-full h-full object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[75vh]'}`} />
           ) : (
-            <canvas
-              ref={canvasRef}
-              width={1920}
-              height={1080}
-              className={`w-full h-full object-contain ${
-                isFullscreen ? 'max-h-screen' : 'max-h-[75vh]'
-              }`}
-            />
-          )}
+            <canvas ref={canvasRef} width={1920} height={1080} className={`w-full h-full object-contain ${isFullscreen ? 'max-h-screen' : 'max-h-[75vh]'}`} />
+          ))}
 
-          {/* Draggable Circular PiP Webcam Overlay */}
+          {/* Webcam PiP */}
           {isWebcamActive && (
-            <div
-              onMouseDown={handleMouseDown}
-              style={{ top: `${pipPosition.y}px`, left: `${pipPosition.x}px` }}
-              className="pip-webcam-overlay select-none"
-              title="Moveable Student Webcam PiP (Drag to move)"
-            >
-              <div className="w-full h-full relative bg-slate-900 flex items-center justify-center overflow-hidden">
-                {liveWebcamFrame ? (
-                  <img
-                    src={liveWebcamFrame}
-                    alt={`Cabin ${cabinPad} Webcam`}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  /* Fallback when webcam is warming up or inactive */
-                  <div className="w-full h-full bg-gradient-to-t from-emerald-950 to-slate-900 flex flex-col items-center justify-center p-2 text-center">
-                    <div className="text-3xl mb-1 animate-pulse">👤</div>
-                    <div className="text-[10px] font-bold text-emerald-300 truncate max-w-[100px]">
-                      {cabin.student?.name}
-                    </div>
-                    <div className="text-[8px] text-slate-400 uppercase tracking-widest">
-                      CABIN {cabinPad} CAM
-                    </div>
-                  </div>
-                )}
-                {/* PiP Active Indicator */}
-                <div className="absolute top-2 right-2 w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399] animate-pulse" />
-              </div>
+            <div className="absolute top-6 left-6 w-40 h-40 rounded-full overflow-hidden border-2 border-cyan-400/80 shadow-2xl bg-slate-900 z-10">
+              <video ref={pipVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${hasWebcam ? 'block' : 'hidden'}`} />
+              {!hasWebcam && (
+                <div className="w-full h-full flex flex-col items-center justify-center text-center p-2">
+                  <div className="text-3xl mb-1 animate-pulse">👤</div>
+                  <div className="text-[9px] text-slate-400 uppercase tracking-widest">CABIN {pad} CAM</div>
+                </div>
+              )}
             </div>
           )}
 
-          {/* Floating HUD info at bottom */}
           <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-emerald-900/40 text-xs text-slate-300 pointer-events-none">
-            <div className="flex items-center gap-3">
-              <span className="flex items-center gap-1.5 text-emerald-400 font-bold font-mono">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                {cabin.screenData ? 'SILENT LIVE DESKTOP SURVEILLANCE • LAN' : '1080p @ 60fps • Sub-15ms LAN'}
-              </span>
-              <span className="text-slate-500">|</span>
-              <span>Audio: {isAudioListening ? `${cabin.audioLevel}% (Active)` : 'Muted'}</span>
-            </div>
-
-            <div className="flex items-center gap-3 text-slate-400 text-[11px]">
-              <span>PiP Webcam: {isWebcamActive ? 'Active (Draggable)' : 'Disabled'}</span>
-              <span>AUP Policy: Consent Acknowledged</span>
-            </div>
+            <span className="flex items-center gap-1.5 text-emerald-400 font-bold font-mono"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />{hasLiveVideo ? 'LIVE WEBRTC • SCREEN + DESKTOP AUDIO' : 'CONNECTING • LAN'}</span>
+            <span>Audio: {isAudioListening ? 'On' : 'Muted'} • Webcam: {isWebcamActive ? (hasWebcam ? 'Live' : 'Waiting') : 'Hidden'}</span>
           </div>
         </div>
       </div>

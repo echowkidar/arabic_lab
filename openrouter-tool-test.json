@@ -1,0 +1,36 @@
+﻿{
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731:free",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use test_tool now. Do not answer with normal text. Call the tool."
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "test_tool",
+        "description": "A test tool. It must be called when requested.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "message": {
+              "type": "string",
+              "description": "Message to send to the test tool"
+            }
+          },
+          "required": ["message"]
+        }
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "function",
+    "function": {
+      "name": "test_tool"
+    }
+  },
+  "stream": false,
+  "max_tokens": 300
+}

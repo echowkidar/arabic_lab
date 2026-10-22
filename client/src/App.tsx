@@ -1,17 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, Cabin, Recording, ActiveCall, Language } from './types';
 import { Navbar } from './components/Navbar';
 import { CabinCard } from './components/CabinCard';
 import { SilentMonitorModal } from './components/SilentMonitorModal';
 import { BroadcastStudioModal } from './components/BroadcastStudioModal';
 import { CallModal } from './components/CallModal';
+import { IncomingCallToast } from './components/IncomingCallToast';
+import { PracticeMediaModal } from './components/PracticeMediaModal';
 import { RecordingsModal } from './components/RecordingsModal';
 import { AdminModal } from './components/AdminModal';
 import { StudentCabinView } from './components/StudentCabinView';
 import { LoginView } from './components/LoginView';
 import { fetchCabins, fetchRecordings, getMe } from './services/api';
 import { socket, connectSocket, disconnectSocket } from './services/socket';
-import { Search, Filter, Phone, PhoneCall, Check, X, Bell, Hand } from 'lucide-react';
+import { Search, PhoneCall, Hand } from 'lucide-react';
 
 export function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -20,415 +22,200 @@ export function App() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [language, setLanguage] = useState<Language>('en');
 
-  // Modals & States
   const [activeMonitorCabin, setActiveMonitorCabin] = useState<Cabin | null>(null);
   const [broadcastOpen, setBroadcastOpen] = useState(false);
+  const [practiceOpen, setPracticeOpen] = useState(false);
   const [recordingsOpen, setRecordingsOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [incomingCall, setIncomingCall] = useState<any | null>(null);
   const [raisedHandsAlert, setRaisedHandsAlert] = useState<{ cabinNumber: number; studentName: string }[]>([]);
 
-  // Filters
   const [filterType, setFilterType] = useState<'ALL' | 'ONLINE' | 'SPEAKING' | 'HANDS' | 'INCALL'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
-  const [simulationActive, setSimulationActive] = useState(false);
 
-  // Restore session
   useEffect(() => {
     if (token) {
       getMe()
-        .then((res) => {
-          setUser(res.user);
-          connectSocket(res.user);
-        })
-        .catch(() => {
-          localStorage.removeItem('arabic_lab_token');
-          setUser(null);
-          setToken(null);
-        });
+        .then((res) => { setUser(res.user); connectSocket(res.user); })
+        .catch(() => { localStorage.removeItem('arabic_lab_token'); setUser(null); setToken(null); });
     }
   }, [token]);
 
-  // Fetch initial Cabins & Recordings
   const loadLabData = async () => {
     try {
-      const [c, r] = await Promise.all([fetchCabins(), fetchRecordings()]);
-      setCabins((prev) => {
-        if (!prev || prev.length === 0) return c;
-        return c.map((newCabin) => {
-          const existing = prev.find((p) => p.cabinNumber === newCabin.cabinNumber);
-          if (existing && (existing.online || existing.screenData || existing.inCall || existing.handRaised)) {
-            return {
-              ...newCabin,
-              online: existing.online ?? newCabin.online,
-              status: existing.status ?? newCabin.status,
-              socketId: existing.socketId || newCabin.socketId,
-              audioLevel: existing.audioLevel || newCabin.audioLevel,
-              inCall: existing.inCall || newCabin.inCall,
-              handRaised: existing.handRaised || newCabin.handRaised,
-              isScreenShared: existing.isScreenShared || newCabin.isScreenShared,
-              screenData: existing.screenData || newCabin.screenData,
-            };
-          }
-          return newCabin;
-        });
-      });
+      const [c, r] = await Promise.all([
+        fetchCabins(),
+        user && user.role !== 'STUDENT' ? fetchRecordings() : Promise.resolve([] as Recording[]),
+      ]);
+      setCabins(c);
       setRecordings(r);
     } catch (err) {
       console.warn('Data load error:', err);
     }
   };
 
-  useEffect(() => {
-    if (user) {
-      loadLabData();
-    }
-  }, [user]);
+  useEffect(() => { if (user) loadLabData(); /* eslint-disable-next-line */ }, [user]);
 
-  // Web Audio chime synthesizer (zero external audio file dependencies)
-  const playChime = (type: 'ring' | 'alert') => {
+  const playChime = () => {
     try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
       const now = ctx.currentTime;
-
-      if (type === 'ring') {
-        const osc1 = ctx.createOscillator();
-        const osc2 = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc1.frequency.value = 440;
-        osc2.frequency.value = 480;
-        gain.gain.setValueAtTime(0.15, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 1.2);
-        osc1.connect(gain);
-        osc2.connect(gain);
-        gain.connect(ctx.destination);
-        osc1.start(now);
-        osc2.start(now);
-        osc1.stop(now + 1.2);
-        osc2.stop(now + 1.2);
-      } else {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.frequency.setValueAtTime(587.33, now);
-        osc.frequency.exponentialRampToValueAtTime(880, now + 0.35);
-        gain.gain.setValueAtTime(0.18, now);
-        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.6);
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.start(now);
-        osc.stop(now + 0.6);
-      }
-    } catch (_) {}
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.setValueAtTime(587.33, now);
+      osc.frequency.exponentialRampToValueAtTime(880, now + 0.3);
+      gain.gain.setValueAtTime(0.16, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.5);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(now); osc.stop(now + 0.5);
+      setTimeout(() => ctx.close().catch(() => {}), 700);
+    } catch { /* noop */ }
   };
 
-  // Socket Event Subscriptions
-  useEffect(() => {
-    if (!user) return;
-
-    // Incoming Call Receiver
-    socket.on('incoming-call', (callData) => {
-      setIncomingCall(callData);
-      playChime('ring');
-    });
-
-    socket.on('call-response-received', (data: { accepted: boolean; responderSocketId: string; roomId: string; responderName: string }) => {
-      if (data.accepted) {
-        setActiveCall((prev) => prev ? { ...prev, peerSocketId: data.responderSocketId, accepted: true } : null);
-      } else {
-        alert(`${data.responderName || 'User'} declined the call.`);
-        setActiveCall(null);
-      }
-    });
-
-    socket.on('call-ended-by-peer', () => {
-      setActiveCall(null);
-      setIncomingCall(null);
-    });
-
-    // Hand Raised Alert for Professor
-    socket.on('hand-raised', (data) => {
-      const cabinNum = Number(data.cabinNumber);
-      playChime('alert');
-      setRaisedHandsAlert((prev) => {
-        if (prev.some((h) => Number(h.cabinNumber) === cabinNum)) return prev;
-        return [...prev, { ...data, cabinNumber: cabinNum }];
-      });
-      setCabins((prev) =>
-        prev.map((c) =>
-          Number(c.cabinNumber) === cabinNum ? { ...c, handRaised: true } : c
-        )
-      );
-    });
-
-    socket.on('hand-lowered', (data) => {
-      const cabinNum = Number(data.cabinNumber);
-      setRaisedHandsAlert((prev) => prev.filter((h) => Number(h.cabinNumber) !== cabinNum));
-      setCabins((prev) =>
-        prev.map((c) =>
-          Number(c.cabinNumber) === cabinNum ? { ...c, handRaised: false } : c
-        )
-      );
-    });
-
-    // Full initial snapshot of all 25 cabins on professor connect
-    socket.on('cabin-snapshot', (snapshot: Record<number, any>) => {
-      setCabins((prev) =>
-        prev.map((c) => {
-          const live = snapshot[c.cabinNumber];
-          if (live) {
-            const isOnline = Boolean(live.online);
-            return {
-              ...c,
-              online: isOnline,
-              status: !c.student?.isActive
-                ? 'DISABLED'
-                : isOnline
-                ? live.inCall
-                  ? 'IN_CALL'
-                  : 'ONLINE'
-                : 'OFFLINE',
-              socketId: live.socketId,
-              audioLevel: live.audioLevel || 0,
-              inCall: Boolean(live.inCall),
-              handRaised: Boolean(live.handRaised),
-              screenData: live.screenData || c.screenData,
-              isScreenShared: Boolean(live.isScreenShared),
-              isWebcamActive: Boolean(live.isWebcamActive),
-            };
-          }
-          return c;
-        })
-      );
-    });
-
-    // Cabin Status Updates
-    socket.on('cabin-updated', (updatedCabin: any) => {
-      setCabins((prev) =>
-        prev.map((c) => {
-          if (c.cabinNumber === updatedCabin.cabinNumber) {
-            const isOnline = Boolean(updatedCabin.online);
-            return {
-              ...c,
-              ...updatedCabin,
-              online: isOnline,
-              screenData: isOnline ? (updatedCabin.screenData || c.screenData) : null,
-              status: !c.student?.isActive
-                ? 'DISABLED'
-                : isOnline
-                ? updatedCabin.inCall
-                  ? 'IN_CALL'
-                  : 'ONLINE'
-                : 'OFFLINE',
-            };
-          }
-          return c;
-        })
-      );
-    });
-
-    socket.on('cabin-audio-level', (data: { cabinNumber: number; level: number }) => {
-      setCabins((prev) =>
-        prev.map((c) =>
-          c.cabinNumber === data.cabinNumber
-            ? {
-                ...c,
-                audioLevel: data.level,
-                online: true,
-                status: c.inCall ? 'IN_CALL' : 'ONLINE',
-              }
-            : c
-        )
-      );
-    });
-
-    // Real-Time Student Desktop Screen Surveillance Stream
-    socket.on('cabin-screen-update', (data: { cabinNumber: number; screenData: string }) => {
-      setCabins((prev) =>
-        prev.map((c) =>
-          c.cabinNumber === data.cabinNumber
-            ? {
-                ...c,
-                screenData: data.screenData,
-                isScreenShared: true,
-                online: true,
-                status: c.inCall ? 'IN_CALL' : 'ONLINE',
-              }
-            : c
-        )
-      );
-    });
-
-    return () => {
-      socket.off('incoming-call');
-      socket.off('call-ended-by-peer');
-      socket.off('hand-raised');
-      socket.off('hand-lowered');
-      socket.off('cabin-snapshot');
-      socket.off('cabin-updated');
-      socket.off('cabin-audio-level');
-      socket.off('cabin-screen-update');
-    };
-  }, [user]);
-
-  // Simulated 25-Cabin Activity Loop (for realistic demo)
-  useEffect(() => {
-    if (!simulationActive) {
-      if (user && user.role !== 'STUDENT') {
-        loadLabData();
-      }
-      return;
-    }
-    if (!user || user.role === 'STUDENT') return;
-
-    const interval = setInterval(() => {
-      setCabins((prev) =>
-        prev.map((c) => {
-          // Keep active/online for simulation
-          const isSpeakingNow = Math.random() > 0.65;
-          const randomLevel = isSpeakingNow ? Math.floor(Math.random() * 70) + 20 : Math.floor(Math.random() * 12);
-          return {
-            ...c,
-            online: true,
-            status: c.inCall ? 'IN_CALL' : 'ONLINE',
-            audioLevel: randomLevel,
-            isWebcamActive: true,
-          };
-        })
-      );
-    }, 800);
-
-    return () => clearInterval(interval);
-  }, [simulationActive, user]);
-
-  const handleToggleSimulation = () => {
-    setSimulationActive((prev) => {
-      const next = !prev;
-      if (!next) {
-        loadLabData();
-      }
-      return next;
-    });
-  };
-
-  const handleLoginSuccess = (loggedInUser: User, loggedInToken: string) => {
-    setUser(loggedInUser);
-    setToken(loggedInToken);
-    connectSocket(loggedInUser);
-  };
-
-  const handleLogout = () => {
-    disconnectSocket();
-    localStorage.removeItem('arabic_lab_token');
-    setUser(null);
-    setToken(null);
-    setActiveCall(null);
-    setActiveMonitorCabin(null);
-  };
-
-  // Call Handlers
-  const handleStartCall = (target: Cabin | number | 'PROFESSOR', type: 'VIDEO' | 'AUDIO') => {
-    if (target === 'PROFESSOR') {
-      const call: ActiveCall = {
-        roomId: `prof-call-${user?.cabinNumber || 1}-${Date.now()}`,
-        peerSocketId: '',
-        peerName: 'Prof. MOHD FAIZAN BEG',
-        peerRole: 'PROFESSOR',
-        callType: type,
-        isCaller: true,
-      };
-
-      socket.emit('call-user-request', {
-        fromRole: 'STUDENT',
-        fromName: user?.name || `Cabin ${user?.cabinNumber || 1}`,
-        fromCabin: user?.cabinNumber || 1,
-        callType: type,
-        roomId: call.roomId,
-      });
-
-      setActiveCall(call);
-      return;
-    }
-
-    const cabinNum = typeof target === 'number' ? target : target.cabinNumber;
-    const targetCabin = cabins.find((c) => c.cabinNumber === cabinNum);
-
-    const call: ActiveCall = {
-      roomId: `room-c${cabinNum}-${Date.now()}`,
-      peerSocketId: '',
-      peerName: targetCabin?.student?.name || `Cabin ${cabinNum}`,
-      peerCabin: cabinNum,
-      peerRole: 'STUDENT',
-      callType: type,
-      isCaller: true,
-    };
-
-    socket.emit('call-user-request', {
-      fromRole: user?.role || 'PROFESSOR',
-      fromName: user?.name || 'Professor',
-      targetCabin: cabinNum,
-      callType: type,
-      roomId: call.roomId,
-    });
-
-    setActiveCall(call);
-    if (activeMonitorCabin) setActiveMonitorCabin(null);
-  };
-
-  const handleAcceptIncomingCall = () => {
-    if (!incomingCall) return;
+  const acceptCall = (callData: any) => {
     socket.emit('call-response', {
       accepted: true,
-      callerSocketId: incomingCall.fromSocketId,
-      roomId: incomingCall.roomId,
+      callerSocketId: callData.fromSocketId,
+      roomId: callData.roomId,
       responderName: user?.name || 'User',
       responderCabin: user?.cabinNumber || undefined,
     });
-
     setActiveCall({
-      roomId: incomingCall.roomId,
-      peerSocketId: incomingCall.fromSocketId,
-      peerName: incomingCall.fromName,
-      peerCabin: incomingCall.fromCabin,
-      peerRole: incomingCall.fromRole,
-      callType: incomingCall.callType,
+      roomId: callData.roomId,
+      peerSocketId: callData.fromSocketId,
+      peerName: callData.fromName,
+      peerCabin: callData.fromCabin,
+      peerRole: callData.fromRole,
+      callType: callData.callType,
       isCaller: false,
     });
     setIncomingCall(null);
   };
 
-  const handleRejectIncomingCall = () => {
-    if (!incomingCall) return;
-    socket.emit('call-response', {
-      accepted: false,
-      callerSocketId: incomingCall.fromSocketId,
-      roomId: incomingCall.roomId,
-      responderName: user?.name || 'User',
+  useEffect(() => {
+    if (!user) return;
+
+    socket.on('incoming-call', (callData) => {
+      // Student receiving a PROFESSOR call -> auto-accept (no clicking needed).
+      if (user.role === 'STUDENT' && callData.fromRole === 'PROFESSOR') {
+        acceptCall(callData);
+        return;
+      }
+      // Everyone else -> small non-intrusive toast (desktop stays usable).
+      setIncomingCall(callData);
+      playChime();
     });
+
+    socket.on('call-response-received', (data: { accepted: boolean; responderSocketId: string; roomId: string; responderName: string }) => {
+      if (data.accepted) {
+        setActiveCall((prev) => (prev && prev.roomId === data.roomId ? { ...prev, peerSocketId: data.responderSocketId, accepted: true } : prev));
+      } else {
+        setActiveCall((prev) => (prev && prev.roomId === data.roomId ? null : prev));
+      }
+    });
+
+    socket.on('call-ended-by-peer', (data: { roomId?: string }) => {
+      setActiveCall((prev) => {
+        if (!prev) return null;
+        if (data?.roomId && prev.roomId !== data.roomId) return prev; // not our call
+        return null;
+      });
+      setIncomingCall((prev: any) => (prev && data?.roomId && prev.roomId !== data.roomId ? prev : null));
+    });
+
+    socket.on('hand-raised', (data) => {
+      const n = Number(data.cabinNumber);
+      playChime();
+      setRaisedHandsAlert((prev) => (prev.some((h) => Number(h.cabinNumber) === n) ? prev : [...prev, { ...data, cabinNumber: n }]));
+      setCabins((prev) => prev.map((c) => (Number(c.cabinNumber) === n ? { ...c, handRaised: true } : c)));
+    });
+
+    socket.on('hand-lowered', (data) => {
+      const n = Number(data.cabinNumber);
+      setRaisedHandsAlert((prev) => prev.filter((h) => Number(h.cabinNumber) !== n));
+      setCabins((prev) => prev.map((c) => (Number(c.cabinNumber) === n ? { ...c, handRaised: false } : c)));
+    });
+
+    socket.on('cabin-snapshot', (snapshot: Record<number, any>) => {
+      setCabins((prev) => prev.map((c) => {
+        const live = snapshot[c.cabinNumber];
+        if (!live) return c;
+        const isOnline = Boolean(live.online);
+        return {
+          ...c, online: isOnline,
+          status: !c.student?.isActive ? 'DISABLED' : isOnline ? (live.inCall ? 'IN_CALL' : 'ONLINE') : 'OFFLINE',
+          socketId: live.socketId, audioLevel: live.audioLevel || 0,
+          inCall: Boolean(live.inCall), handRaised: Boolean(live.handRaised),
+          screenData: live.screenData || c.screenData,
+          isScreenShared: Boolean(live.isScreenShared), isWebcamActive: Boolean(live.isWebcamActive),
+        };
+      }));
+    });
+
+    socket.on('cabin-updated', (u: any) => {
+      setCabins((prev) => prev.map((c) => {
+        if (c.cabinNumber !== u.cabinNumber) return c;
+        const isOnline = Boolean(u.online);
+        return {
+          ...c, ...u, online: isOnline,
+          screenData: isOnline ? (u.screenData || c.screenData) : null,
+          status: !c.student?.isActive ? 'DISABLED' : isOnline ? (u.inCall ? 'IN_CALL' : 'ONLINE') : 'OFFLINE',
+        };
+      }));
+    });
+
+    socket.on('cabin-audio-level', (data: { cabinNumber: number; level: number }) => {
+      setCabins((prev) => prev.map((c) => (c.cabinNumber === data.cabinNumber ? { ...c, audioLevel: data.level, online: true, status: c.inCall ? 'IN_CALL' : 'ONLINE' } : c)));
+    });
+
+    socket.on('cabin-screen-update', (data: { cabinNumber: number; screenData: string }) => {
+      setCabins((prev) => prev.map((c) => (c.cabinNumber === data.cabinNumber ? { ...c, screenData: data.screenData, isScreenShared: true, online: true, status: c.inCall ? 'IN_CALL' : 'ONLINE' } : c)));
+    });
+
+    return () => {
+      socket.off('incoming-call'); socket.off('call-response-received'); socket.off('call-ended-by-peer');
+      socket.off('hand-raised'); socket.off('hand-lowered'); socket.off('cabin-snapshot');
+      socket.off('cabin-updated'); socket.off('cabin-audio-level'); socket.off('cabin-screen-update');
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
+
+  const handleLoginSuccess = (u: User, t: string) => { setUser(u); setToken(t); connectSocket(u); };
+  const handleLogout = () => { disconnectSocket(); localStorage.removeItem('arabic_lab_token'); setUser(null); setToken(null); setActiveCall(null); setActiveMonitorCabin(null); };
+
+  const handleStartCall = (target: Cabin | number | 'PROFESSOR', type: 'VIDEO' | 'AUDIO') => {
+    if (target === 'PROFESSOR') {
+      const roomId = `prof-call-${user?.cabinNumber || 1}-${Date.now()}`;
+      setActiveCall({ roomId, peerSocketId: '', peerName: 'Professor', peerRole: 'PROFESSOR', callType: type, isCaller: true });
+      socket.emit('call-user-request', { fromRole: 'STUDENT', fromName: user?.name || `Cabin ${user?.cabinNumber || 1}`, fromCabin: user?.cabinNumber || 1, callType: type, roomId });
+      return;
+    }
+    const cabinNum = typeof target === 'number' ? target : target.cabinNumber;
+    const targetCabin = cabins.find((c) => c.cabinNumber === cabinNum);
+    const roomId = `room-c${cabinNum}-${Date.now()}`;
+    setActiveCall({ roomId, peerSocketId: targetCabin?.socketId || '', peerName: targetCabin?.student?.name || `Cabin ${cabinNum}`, peerCabin: cabinNum, peerRole: 'STUDENT', callType: type, isCaller: true });
+    socket.emit('call-user-request', { fromRole: user?.role || 'PROFESSOR', fromName: user?.name || 'Professor', targetCabin: cabinNum, targetSocketId: targetCabin?.socketId, callType: type, roomId });
+    if (activeMonitorCabin) setActiveMonitorCabin(null);
+  };
+
+  const rejectIncoming = () => {
+    if (!incomingCall) return;
+    socket.emit('call-response', { accepted: false, callerSocketId: incomingCall.fromSocketId, roomId: incomingCall.roomId, responderName: user?.name || 'User' });
     setIncomingCall(null);
   };
 
   if (!user) {
-    return (
-      <LoginView
-        onLoginSuccess={handleLoginSuccess}
-        language={language}
-        onSelectLanguage={(lang) => setLanguage(lang)}
-      />
-    );
+    return <LoginView onLoginSuccess={handleLoginSuccess} language={language} onSelectLanguage={setLanguage} />;
   }
 
-  // Filter cabins
   const filteredCabins = cabins.filter((c) => {
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
-      const nameMatch = c.student?.name?.toLowerCase().includes(q);
-      const cabinMatch = `cabin ${c.cabinNumber}`.includes(q) || `c-${c.cabinNumber}`.includes(q);
-      if (!nameMatch && !cabinMatch) return false;
+      if (!(c.student?.name?.toLowerCase().includes(q) || `cabin ${c.cabinNumber}`.includes(q) || `c-${c.cabinNumber}`.includes(q))) return false;
     }
-
     if (filterType === 'ONLINE') return c.online;
     if (filterType === 'SPEAKING') return c.audioLevel > 20;
     if (filterType === 'HANDS') return c.handRaised;
@@ -437,228 +224,106 @@ export function App() {
   });
 
   const isArabic = language === 'ar';
-  const isUrdu = language === 'ur';
-  const isRtl = isArabic || isUrdu;
+  const isRtl = isArabic || language === 'ur';
 
   return (
     <div className={`min-h-screen p-4 md:p-6 pb-16 ${isRtl ? 'font-arabic' : 'font-sans'}`} dir={isRtl ? 'rtl' : 'ltr'}>
-      {/* Top Navigation */}
       <Navbar
-        user={user}
-        onLogout={handleLogout}
+        user={user} onLogout={handleLogout}
         onOpenBroadcast={user.role === 'PROFESSOR' ? () => setBroadcastOpen(true) : undefined}
+        onOpenPractice={user.role !== 'STUDENT' ? () => setPracticeOpen(true) : undefined}
         onOpenRecordings={() => setRecordingsOpen(true)}
         onOpenAdmin={user.role !== 'STUDENT' ? () => setAdminOpen(true) : undefined}
         recordingsCount={recordings.length}
-        simulationActive={simulationActive}
-        onToggleSimulation={handleToggleSimulation}
-        language={language}
-        onSelectLanguage={(lang) => setLanguage(lang)}
+        language={language} onSelectLanguage={setLanguage}
       />
 
-      {/* Global Hand Raised Notification Toast */}
       {raisedHandsAlert.length > 0 && user.role !== 'STUDENT' && (
-        <div className="mb-6 p-3 rounded-xl bg-gradient-to-r from-amber-950 to-orange-950 border border-orange-500/60 shadow-xl flex items-center justify-between gap-4 animate-bounce">
+        <div className="mb-6 p-3 rounded-xl bg-gradient-to-r from-amber-950 to-orange-950 border border-orange-500/60 shadow-xl flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <Hand className="w-5 h-5 text-orange-400" />
             <div>
-              <span className="text-xs font-bold text-white">
-                {isArabic ? 'طلاب يطلبون الاستفسار ومساعدة الأستاذ:' : 'Students Requesting Assistance:'}
-              </span>
-              <div className="flex items-center gap-2 mt-1">
+              <span className="text-xs font-bold text-white">{isArabic ? 'طلاب يطلبون المساعدة:' : 'Students Requesting Assistance:'}</span>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
                 {raisedHandsAlert.map((h) => (
-                  <span
-                    key={h.cabinNumber}
-                    className="text-[11px] font-mono px-2 py-0.5 rounded bg-orange-600 text-white font-bold"
-                  >
+                  <button key={h.cabinNumber} onClick={() => { const c = cabins.find((x) => x.cabinNumber === h.cabinNumber); if (c) handleStartCall(c, 'VIDEO'); }}
+                    className="text-[11px] font-mono px-2 py-0.5 rounded bg-orange-600 text-white font-bold hover:bg-orange-500">
                     Cabin {String(h.cabinNumber).padStart(2, '0')} ({h.studentName})
-                  </span>
+                  </button>
                 ))}
               </div>
             </div>
           </div>
-          <button
-            onClick={() => setRaisedHandsAlert([])}
-            className="btn-outline text-xs py-1 px-3 text-orange-300"
-          >
-            {isArabic ? 'إغلاق التنبيه' : 'Dismiss'}
-          </button>
+          <button onClick={() => setRaisedHandsAlert([])} className="btn-outline text-xs py-1 px-3 text-orange-300">{isArabic ? 'إغلاق' : 'Dismiss'}</button>
         </div>
       )}
 
-      {/* Incoming Call Overlay Modal */}
       {incomingCall && (
-        <div className="modal-backdrop">
-          <div className="glass-panel-elevated p-6 max-w-md w-full text-center border-yellow-500/60 animate-pulse">
-            <div className="w-16 h-16 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/50 flex items-center justify-center mx-auto mb-4 text-2xl">
-              <PhoneCall className="w-8 h-8 animate-bounce" />
-            </div>
-            <h3 className="text-lg font-bold text-white">{incomingCall.fromName}</h3>
-            <p className="text-xs text-amber-400 mt-1">
-              Incoming {incomingCall.callType} Call {incomingCall.fromCabin ? `from Cabin ${incomingCall.fromCabin}` : ''}
-            </p>
-
-            <div className="flex items-center justify-center gap-4 mt-6">
-              <button
-                onClick={handleAcceptIncomingCall}
-                className="btn-primary py-2.5 px-6 rounded-xl flex items-center gap-2"
-              >
-                <Check className="w-4 h-4" />
-                <span>Accept</span>
-              </button>
-              <button
-                onClick={handleRejectIncomingCall}
-                className="btn-danger py-2.5 px-6 rounded-xl flex items-center gap-2"
-              >
-                <X className="w-4 h-4" />
-                <span>Decline</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ROLE VIEW ROUTING */}
-      {user.role === 'STUDENT' ? (
-        /* STUDENT VIEW */
-        <StudentCabinView
-          user={user}
-          onStartCall={(targetCabin, type) => handleStartCall(targetCabin, type)}
+        <IncomingCallToast
+          fromName={incomingCall.fromName}
+          fromCabin={incomingCall.fromCabin}
+          callType={incomingCall.callType}
+          onAccept={() => acceptCall(incomingCall)}
+          onReject={rejectIncoming}
           language={language}
         />
-      ) : (
-        /* PROFESSOR / ADMIN CONSOLE: 25 CABINS SUPERVISION GRID */
-        <main className="space-y-6">
-          
-          {/* Dashboard Summary & Filter HUD */}
-          <div className="glass-panel p-4 flex flex-wrap items-center justify-between gap-4">
-            
-            {/* Telemetry Stats */}
-            <div className="flex items-center gap-4 text-xs">
-              <div className="flex items-center gap-2">
-                <span className="font-heading font-black text-lg text-emerald-400">25</span>
-                <span className="text-slate-400">{isArabic ? 'إجمالي الكبائن' : 'Total Cabins'}</span>
-              </div>
-              <div className="h-4 w-px bg-emerald-900/60" />
-              <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
-                <span className="pulse-dot" />
-                <span>{cabins.filter((c) => c.online).length} {isArabic ? 'متصل' : 'Active'}</span>
-              </div>
-              <div className="h-4 w-px bg-emerald-900/60" />
-              <div className="flex items-center gap-1.5 text-yellow-400 font-semibold">
-                <span>🎙️ {cabins.filter((c) => c.audioLevel > 20).length} {isArabic ? 'يتحدثون' : 'Speaking'}</span>
-              </div>
-            </div>
+      )}
 
-            {/* Filter Pills & Search */}
+      {user.role === 'STUDENT' ? (
+        <StudentCabinView user={user} onStartCall={(t, ty) => handleStartCall(t, ty)} language={language} />
+      ) : (
+        <main className="space-y-6">
+          <div className="glass-panel p-4 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4 text-xs">
+              <div className="flex items-center gap-2"><span className="font-heading font-black text-lg text-emerald-400">25</span><span className="text-slate-400">{isArabic ? 'إجمالي الكبائن' : 'Total Cabins'}</span></div>
+              <div className="h-4 w-px bg-emerald-900/60" />
+              <div className="flex items-center gap-1.5 text-emerald-400 font-semibold"><span className="pulse-dot" /><span>{cabins.filter((c) => c.online).length} {isArabic ? 'متصل' : 'Active'}</span></div>
+              <div className="h-4 w-px bg-emerald-900/60" />
+              <div className="flex items-center gap-1.5 text-yellow-400 font-semibold"><span>🎙️ {cabins.filter((c) => c.audioLevel > 20).length} {isArabic ? 'يتحدثون' : 'Speaking'}</span></div>
+            </div>
             <div className="flex items-center flex-wrap gap-2.5">
-              {/* Search */}
               <div className="relative">
                 <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={isArabic ? 'بحث بالاسم أو رقم الكابينة...' : 'Search cabin or student...'}
-                  className="pl-8 pr-3 py-1.5 bg-slate-900/90 border border-emerald-900/50 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 w-44"
-                />
+                <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={isArabic ? 'بحث...' : 'Search cabin or student...'}
+                  className="pl-8 pr-3 py-1.5 bg-slate-900/90 border border-emerald-900/50 rounded-lg text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-400 w-44" />
               </div>
-
-              {/* Filter Buttons */}
               <div className="flex items-center gap-1 bg-black/40 p-1 rounded-lg border border-emerald-900/50 text-xs">
-                {(['ALL', 'ONLINE', 'SPEAKING', 'HANDS', 'INCALL'] as const).map((type) => (
-                  <button
-                    key={type}
-                    onClick={() => setFilterType(type)}
-                    className={`px-2.5 py-1 rounded font-semibold transition-all ${
-                      filterType === type
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : 'text-slate-400 hover:text-white'
-                    }`}
-                  >
-                    {type === 'ALL' && (isArabic ? 'الكل (25)' : 'All 25')}
-                    {type === 'ONLINE' && (isArabic ? 'متصل' : 'Online')}
-                    {type === 'SPEAKING' && (isArabic ? 'صوت نشط' : 'Speaking')}
-                    {type === 'HANDS' && (isArabic ? 'أيدي مرفوعة' : 'Hands')}
-                    {type === 'INCALL' && (isArabic ? 'في مكالمة' : 'In Call')}
+                {(['ALL', 'ONLINE', 'SPEAKING', 'HANDS', 'INCALL'] as const).map((t) => (
+                  <button key={t} onClick={() => setFilterType(t)}
+                    className={`px-2.5 py-1 rounded font-semibold transition-all ${filterType === t ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}`}>
+                    {t === 'ALL' ? (isArabic ? 'الكل' : 'All 25') : t === 'ONLINE' ? (isArabic ? 'متصل' : 'Online') : t === 'SPEAKING' ? (isArabic ? 'صوت' : 'Speaking') : t === 'HANDS' ? (isArabic ? 'أيدي' : 'Hands') : (isArabic ? 'مكالمة' : 'In Call')}
                   </button>
                 ))}
               </div>
             </div>
           </div>
 
-          {/* 25-Cabins Supervision Grid */}
           <section className="cabin-grid">
             {filteredCabins.map((cabin) => (
-              <CabinCard
-                key={cabin.cabinNumber}
-                cabin={cabin}
-                onMonitor={(c) => setActiveMonitorCabin(c)}
-                onCall={(c, type) => handleStartCall(c, type)}
-                language={language}
-              />
+              <CabinCard key={cabin.cabinNumber} cabin={cabin} onMonitor={(c) => setActiveMonitorCabin(c)} onCall={(c, type) => handleStartCall(c, type)} language={language} />
             ))}
           </section>
         </main>
       )}
 
-      {/* Silent Monitor Modal */}
       {activeMonitorCabin && user && (
         <SilentMonitorModal
           cabin={cabins.find((c) => c.cabinNumber === activeMonitorCabin.cabinNumber) || activeMonitorCabin}
           currentUser={user}
           onClose={() => setActiveMonitorCabin(null)}
-          onNextCabin={() => {
-            const nextNum = (activeMonitorCabin.cabinNumber % 25) + 1;
-            const nextCabin = cabins.find((c) => c.cabinNumber === nextNum) || { ...activeMonitorCabin, cabinNumber: nextNum };
-            setActiveMonitorCabin(nextCabin);
-          }}
-          onPrevCabin={() => {
-            const prevNum = activeMonitorCabin.cabinNumber === 1 ? 25 : activeMonitorCabin.cabinNumber - 1;
-            const prevCabin = cabins.find((c) => c.cabinNumber === prevNum) || { ...activeMonitorCabin, cabinNumber: prevNum };
-            setActiveMonitorCabin(prevCabin);
-          }}
+          onNextCabin={() => { const n = (activeMonitorCabin.cabinNumber % 25) + 1; setActiveMonitorCabin(cabins.find((c) => c.cabinNumber === n) || { ...activeMonitorCabin, cabinNumber: n }); }}
+          onPrevCabin={() => { const n = activeMonitorCabin.cabinNumber === 1 ? 25 : activeMonitorCabin.cabinNumber - 1; setActiveMonitorCabin(cabins.find((c) => c.cabinNumber === n) || { ...activeMonitorCabin, cabinNumber: n }); }}
           onStartCall={(c, type) => handleStartCall(c, type)}
           language={language}
         />
       )}
 
-      {/* Classroom Broadcast Modal */}
-      {broadcastOpen && (
-        <BroadcastStudioModal
-          currentUser={user || undefined}
-          onClose={() => setBroadcastOpen(false)}
-          language={language}
-        />
-      )}
-
-      {/* 1:1 Call Modal */}
-      {activeCall && user && (
-        <CallModal
-          call={activeCall}
-          currentUser={user}
-          onEndCall={() => setActiveCall(null)}
-          language={language}
-        />
-      )}
-
-      {/* Recordings Library Modal */}
-      {recordingsOpen && (
-        <RecordingsModal
-          recordings={recordings}
-          onClose={() => setRecordingsOpen(false)}
-          onRefresh={loadLabData}
-          language={language}
-        />
-      )}
-
-      {/* Admin Management Modal */}
-      {adminOpen && (
-        <AdminModal
-          onClose={() => setAdminOpen(false)}
-          language={language}
-        />
-      )}
+      {broadcastOpen && <BroadcastStudioModal currentUser={user || undefined} onClose={() => setBroadcastOpen(false)} language={language} />}
+      {practiceOpen && <PracticeMediaModal cabins={cabins} onClose={() => setPracticeOpen(false)} language={language} />}
+      {activeCall && user && <CallModal call={activeCall} currentUser={user} onEndCall={() => { if (activeCall) socket.emit('call-ended', { targetSocketId: activeCall.peerSocketId, cabinNumber: activeCall.peerCabin, roomId: activeCall.roomId }); setActiveCall(null); }} language={language} />}
+      {recordingsOpen && <RecordingsModal recordings={recordings} onClose={() => setRecordingsOpen(false)} onRefresh={loadLabData} language={language} />}
+      {adminOpen && <AdminModal onClose={() => setAdminOpen(false)} language={language} />}
     </div>
   );
 }

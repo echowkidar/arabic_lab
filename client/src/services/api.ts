@@ -133,3 +133,45 @@ export async function logAudit(cabinNumber: number, action: 'SCREEN_VIEW' | 'AUD
   if (!res.ok) console.warn('Failed to record audit log');
   return res.json();
 }
+
+
+// ---- Practice Media (professor pushes audio/video drills to students) ----
+export interface PracticeMedia {
+  url: string;
+  name: string;
+  sizeBytes?: number;
+  createdAt?: string;
+}
+
+export async function uploadPracticeMedia(formData: FormData): Promise<PracticeMedia> {
+  const token = localStorage.getItem('arabic_lab_token');
+  const res = await fetch(`${API_BASE}/media/upload`, {
+    method: 'POST',
+    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: formData,
+  });
+  if (!res.ok) throw new Error('Failed to upload media');
+  return res.json();
+}
+
+export async function listPracticeMedia(): Promise<PracticeMedia[]> {
+  const res = await fetch(`${API_BASE}/media`, { headers: getAuthHeader() });
+  if (!res.ok) throw new Error('Failed to list media');
+  const data = await res.json();
+  return data.media;
+}
+
+export async function deletePracticeMedia(file: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/media?file=${encodeURIComponent(file)}`, {
+    method: 'DELETE',
+    headers: getAuthHeader(),
+  });
+  if (!res.ok) throw new Error('Failed to delete media');
+}
+
+// Resolve a server-relative media URL to an absolute URL the student can fetch.
+export function mediaUrl(url: string): string {
+  if (!url) return url;
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${SERVER_URL}${url}`;
+}
