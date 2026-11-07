@@ -137,9 +137,9 @@ app.get('/api/app/version', (_req, res) => {
   // Fallback: hardcoded version if version.json is missing
   console.warn('[AutoUpdate] version.json not found, serving hardcoded fallback.');
   res.json({
-    version: '1.5.2',
+    version: '1.5.3',
     downloadUrl: '/api/download/setup',
-    releaseDate: '2026-11-08',
+    releaseDate: '2026-11-09',
     name: 'Arabic Language Lab Suite',
     mandatory: false,
   });

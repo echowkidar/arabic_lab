@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-const APP_VERSION = '1.5.2';
+const APP_VERSION = '1.5.3';
 
 // Command line switches for WebRTC and Screen Capture
 const LAN_ORIGINS = process.env.LAB_LAN_ORIGINS ||

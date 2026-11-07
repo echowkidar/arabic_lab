@@ -171,6 +171,13 @@ export function createPeer(opts: CreatePeerOpts): RTCPeerConnection {
     opts.localStream.getTracks().forEach((t) => pc.addTrack(t, opts.localStream as MediaStream));
   }
 
+  // Guarantee negotiation starts even when neither side has a usable media
+  // track yet (camera/mic permission denied or not granted, audio-only call
+  // with a dead mic, etc.) - addTrack() is what normally fires
+  // onnegotiationneeded, so with zero tracks the offer/answer exchange would
+  // otherwise never begin and the call would sit at "Connecting..." forever.
+  try { pc.createDataChannel('arabiclab-keepalive'); } catch { /* noop */ }
+
   // Replay anything the remote sent before this peer existed.
   if (queued) {
     if (Date.now() - queued.at <= PENDING_TTL_MS) {

@@ -1,16 +1,16 @@
 {
-  "version": "1.5.2",
-  "releaseDate": "2026-11-08",
+  "version": "1.5.3",
+  "releaseDate": "2026-11-09",
   "name": "Arabic Language Lab Suite",
   "mandatory": false,
   "downloadUrl": "/api/download/setup",
   "changelog": [
+    "Fixed calls getting stuck on 'Connecting...' forever when camera/mic permission fails on either side",
+    "Call connection now always starts, even with no camera/mic access",
     "Reliable 1:1 calls: both sides' camera/mic always connect, clean hang-up on disconnect, no endless ringing",
     "Screen sharing now works in audio-only calls too",
     "Broadcast: screen and webcam PiP no longer overwrite each other; late-joining cabins receive the live broadcast",
     "Silent monitor: screen vs. webcam always shown in the right place",
-    "Auto-updater never downgrades; safer download handling",
-    "Quick login presets for Cabin 01-04 (4-cabin testing)",
-    "Universal 32-bit & 64-bit Windows Compatibility (Windows 7 / 8 / 10 / 11)"
+    "Quick login presets for Cabin 01-04 (4-cabin testing)"
   ]
 }
