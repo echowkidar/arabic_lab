@@ -1,15 +1,16 @@
 {
-  "version": "1.5.1",
-  "releaseDate": "2026-10-10",
+  "version": "1.5.2",
+  "releaseDate": "2026-11-08",
   "name": "Arabic Language Lab Suite",
   "mandatory": false,
   "downloadUrl": "/api/download/setup",
   "changelog": [
-    "Universal 32-bit & 64-bit Windows Compatibility (Windows 7 / 8 / 10 / 11)",
-    "Fixed 'not a valid Win32 application' error on Windows 7 systems",
-    "Lightweight runtime footprint with reduced RAM and CPU usage",
-    "Full Two-Way Real WebRTC 1:1 Video/Audio Calling",
-    "In-Call Desktop Screen Sharing & Live Microphone Monitoring",
-    "Classroom Lecture Broadcast to All 25 Cabins"
+    "Reliable 1:1 calls: both sides' camera/mic always connect, clean hang-up on disconnect, no endless ringing",
+    "Screen sharing now works in audio-only calls too",
+    "Broadcast: screen and webcam PiP no longer overwrite each other; late-joining cabins receive the live broadcast",
+    "Silent monitor: screen vs. webcam always shown in the right place",
+    "Auto-updater never downgrades; safer download handling",
+    "Quick login presets for Cabin 01-04 (4-cabin testing)",
+    "Universal 32-bit & 64-bit Windows Compatibility (Windows 7 / 8 / 10 / 11)"
   ]
 }

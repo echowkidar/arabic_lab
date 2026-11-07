@@ -29,8 +29,11 @@ const io = new SocketIOServer(server, {
     origin: '*',
     methods: ['GET', 'POST'],
   },
-  pingTimeout: 5000,
-  pingInterval: 10000,
+  // Generous heartbeat so busy/older lab PCs aren't dropped mid-call
+  // (a reconnect changes the socket id and breaks the WebRTC session).
+  pingTimeout: 20000,
+  pingInterval: 25000,
+  maxHttpBufferSize: 5e6, // grid thumbnails are base64 JPEGs
 });
 
 setupSocketServer(io);
@@ -134,9 +137,9 @@ app.get('/api/app/version', (_req, res) => {
   // Fallback: hardcoded version if version.json is missing
   console.warn('[AutoUpdate] version.json not found, serving hardcoded fallback.');
   res.json({
-    version: '1.5.1',
+    version: '1.5.2',
     downloadUrl: '/api/download/setup',
-    releaseDate: '2026-10-10',
+    releaseDate: '2026-11-08',
     name: 'Arabic Language Lab Suite',
     mandatory: false,
   });

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ActiveCall, User, Language } from '../types';
 import { PhoneOff, Mic, MicOff, Video, VideoOff, Monitor, ShieldCheck } from 'lucide-react';
 import { socket } from '../services/socket';
-import { createPeer, closePeer, replaceVideoTrack, replaceAudioTrack } from '../services/rtcEngine';
+import { createPeer, closePeer, getSender, setOutgoingTrack, sendMeta } from '../services/rtcEngine';
 import { getMicStream, getWebcamStream, getScreenStream, mixAudioTracks, stopStream, MixedAudio } from '../services/mediaCapture';
 
 interface CallModalProps {
@@ -21,6 +21,8 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
   const [duration, setDuration] = useState(0);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting');
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [remoteVideoOn, setRemoteVideoOn] = useState(true);
+  const showRemoteVideo = hasRemoteVideo && remoteVideoOn;
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -32,6 +34,12 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
 
   const sessionId = `call:${call.roomId}`;
   const peerCreatedRef = useRef(false);
+  const mediaReadyRef = useRef(false);
+  const callRef = useRef(call);
+  callRef.current = call;
+  const videoSenderRef = useRef<RTCRtpSender | null>(null);
+  const audioSenderRef = useRef<RTCRtpSender | null>(null);
+  const screenSharingRef = useRef(false);
 
   // Acquire local media once
   useEffect(() => {
@@ -50,42 +58,53 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
         mic?.getAudioTracks().forEach((t) => composite.addTrack(t));
         camStreamRef.current?.getVideoTracks().forEach((t) => composite.addTrack(t));
         if (localVideoRef.current) localVideoRef.current.srcObject = composite;
-        maybeCreatePeer();
       } catch (e) {
         console.warn('Local media error:', e);
-        maybeCreatePeer();
       }
+      if (cancelled) return;
+      // Only connect once our own mic/cam are attached, otherwise a fast accept
+      // would create a peer with no outgoing tracks (one-way call).
+      mediaReadyRef.current = true;
+      maybeCreatePeer();
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const maybeCreatePeer = () => {
-    if (peerCreatedRef.current) return;
-    const remote = call.peerSocketId;
+    if (peerCreatedRef.current || !mediaReadyRef.current) return;
+    const c = callRef.current;
+    const remote = c.peerSocketId;
     // Callee can connect immediately; caller waits until the callee accepted.
     if (!remote) return;
-    if (call.isCaller && !call.accepted) return;
+    if (c.isCaller && !c.accepted) return;
     peerCreatedRef.current = true;
 
+    const composite = localCompositeRef.current;
     createPeer({
       sessionId,
       remoteSocketId: remote,
       purpose: 'call',
-      polite: !call.isCaller,
-      localStream: localCompositeRef.current,
-      onTrack: (stream) => {
-        if (remoteVideoRef.current) {
+      polite: !c.isCaller,
+      localStream: composite,
+      onTrack: (stream, track) => {
+        if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
           remoteVideoRef.current.srcObject = stream;
-          remoteVideoRef.current.play().catch(() => {});
         }
-        if (stream.getVideoTracks().length > 0) setHasRemoteVideo(true);
+        remoteVideoRef.current?.play().catch(() => {});
+        if (track.kind === 'video') setHasRemoteVideo(true);
       },
+      // Peer tells us when it has no live video (camera off / screen share ended)
+      onMeta: (meta) => setRemoteVideoOn(meta.video !== 'off'),
       onState: (st) => {
         if (st === 'connected') setStatus('connected');
         else if (st === 'failed' || st === 'disconnected') setStatus('disconnected');
       },
     });
+    const camTrack = composite.getVideoTracks()[0];
+    const micTrack = composite.getAudioTracks()[0];
+    videoSenderRef.current = camTrack ? getSender(sessionId, camTrack) : null;
+    audioSenderRef.current = micTrack ? getSender(sessionId, micTrack) : null;
   };
 
   // React to acceptance / peer socket id changes (caller side)
@@ -119,43 +138,62 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
     const next = !isVideoOff;
     setIsVideoOff(next);
     camStreamRef.current?.getVideoTracks().forEach((t) => (t.enabled = !next));
+    sendMeta(sessionId, { video: next ? 'off' : 'on' });
   };
 
-  const handleToggleScreenShare = async () => {
-    if (isScreenSharing) {
-      stopStream(screenStreamRef.current);
-      screenStreamRef.current = null;
-      mixedRef.current?.stop();
-      mixedRef.current = null;
-      // Restore camera video + mic-only audio
-      const camTrack = camStreamRef.current?.getVideoTracks()[0] || null;
-      replaceVideoTrack(sessionId, camTrack);
-      const micTrack = micStreamRef.current?.getAudioTracks()[0] || null;
-      replaceAudioTrack(sessionId, micTrack);
-      if (localVideoRef.current) localVideoRef.current.srcObject = localCompositeRef.current;
-      setIsScreenSharing(false);
-      return;
-    }
+  const stopScreenShare = () => {
+    if (!screenSharingRef.current) return;
+    screenSharingRef.current = false;
+    stopStream(screenStreamRef.current);
+    screenStreamRef.current = null;
+    mixedRef.current?.stop();
+    mixedRef.current = null;
+    // Restore camera video (none in an audio call) + mic-only audio
+    const composite = localCompositeRef.current;
+    const camTrack = camStreamRef.current?.getVideoTracks()[0] || null;
+    if (videoSenderRef.current) setOutgoingTrack(sessionId, videoSenderRef.current, camTrack, composite);
+    const micTrack = micStreamRef.current?.getAudioTracks()[0] || null;
+    if (audioSenderRef.current) setOutgoingTrack(sessionId, audioSenderRef.current, micTrack, composite);
+    if (localVideoRef.current) localVideoRef.current.srcObject = composite;
+    const camLive = Boolean(camTrack && camTrack.readyState === 'live' && camTrack.enabled);
+    sendMeta(sessionId, { video: camLive ? 'on' : 'off' });
+    setIsScreenSharing(false);
+  };
+
+  const startScreenShare = async () => {
+    if (screenSharingRef.current || !peerCreatedRef.current) return;
     try {
       const screen = await getScreenStream(true); // includes system/desktop audio
       screenStreamRef.current = screen;
+      screenSharingRef.current = true;
+      const composite = localCompositeRef.current;
       const screenVideo = screen.getVideoTracks()[0];
-      replaceVideoTrack(sessionId, screenVideo);
+      // Replace the camera, or add a video track if this is an audio-only call.
+      videoSenderRef.current = setOutgoingTrack(sessionId, videoSenderRef.current, screenVideo, composite);
 
-      // Mix mic + system audio so the student hears both teacher voice AND the file
+      // Mix mic + system audio so the other side hears both voice AND the file
       const sysAudio = screen.getAudioTracks()[0];
       const micTrack = micStreamRef.current?.getAudioTracks()[0];
-      const toMix = [micTrack, sysAudio].filter(Boolean) as MediaStreamTrack[];
-      if (sysAudio && toMix.length > 1) {
+      if (sysAudio) {
+        const toMix = [micTrack, sysAudio].filter(Boolean) as MediaStreamTrack[];
         mixedRef.current = mixAudioTracks(toMix);
-        if (mixedRef.current) replaceAudioTrack(sessionId, mixedRef.current.track);
+        const outAudio = mixedRef.current?.track || sysAudio;
+        audioSenderRef.current = setOutgoingTrack(sessionId, audioSenderRef.current, outAudio, composite);
       }
-      screenVideo.onended = () => handleToggleScreenShare();
+      // Browser/OS "Stop sharing" button: always STOP (never restart) sharing.
+      screenVideo.onended = () => stopScreenShare();
+      sendMeta(sessionId, { video: 'on' });
       if (localVideoRef.current) localVideoRef.current.srcObject = screen;
       setIsScreenSharing(true);
     } catch (e) {
+      screenSharingRef.current = false;
       console.warn('Screen share failed:', e);
     }
+  };
+
+  const handleToggleScreenShare = () => {
+    if (screenSharingRef.current) stopScreenShare();
+    else void startScreenShare();
   };
 
   const handleHangup = () => {
@@ -201,14 +239,14 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
           <video
             ref={remoteVideoRef}
             autoPlay playsInline
-            className={`w-full h-full object-contain ${hasRemoteVideo ? 'block' : 'hidden'}`}
+            className={`w-full h-full object-contain ${showRemoteVideo ? 'block' : 'hidden'}`}
           />
-          {!hasRemoteVideo && (
+          {!showRemoteVideo && (
             <div className="w-full h-full flex flex-col items-center justify-center bg-slate-950 p-12 text-center">
               <div className="w-24 h-24 rounded-full bg-emerald-950/80 border-2 border-emerald-400 flex items-center justify-center text-5xl mb-4 animate-pulse">🎙️</div>
               <h3 className="text-xl font-bold text-white">{call.peerName}</h3>
               <p className="text-xs text-emerald-400 mt-1 font-mono">
-                {call.callType === 'AUDIO' ? 'Audio Dialogue Session' : 'Waiting for video…'}
+                {call.callType === 'AUDIO' ? 'Audio Dialogue Session' : hasRemoteVideo ? 'Camera off' : 'Waiting for video…'}
               </p>
             </div>
           )}
@@ -232,8 +270,8 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
             className={`w-12 h-12 rounded-full flex items-center justify-center transition-all disabled:opacity-40 ${isVideoOff ? 'bg-red-950/80 text-red-400 border border-red-500/60' : 'bg-emerald-950 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-900'}`}>
             {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
           </button>
-          <button onClick={handleToggleScreenShare} title="Share screen with desktop audio"
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${isScreenSharing ? 'bg-cyan-600 text-white border border-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.6)]' : 'bg-emerald-950 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-900'}`}>
+          <button onClick={handleToggleScreenShare} disabled={!isScreenSharing && status !== 'connected'} title="Share screen with desktop audio"
+            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all disabled:opacity-40 ${isScreenSharing ? 'bg-cyan-600 text-white border border-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.6)]' : 'bg-emerald-950 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-900'}`}>
             <Monitor className="w-5 h-5" />
           </button>
           <button onClick={handleHangup} title="End Call"

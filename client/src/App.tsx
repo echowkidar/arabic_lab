@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { User, Cabin, Recording, ActiveCall, Language } from './types';
 import { Navbar } from './components/Navbar';
 import { CabinCard } from './components/CabinCard';
@@ -29,6 +29,28 @@ export function App() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const [incomingCall, setIncomingCall] = useState<any | null>(null);
+  const activeCallRef = useRef<ActiveCall | null>(null);
+  activeCallRef.current = activeCall;
+  const [callNotice, setCallNotice] = useState<string | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
+  const showCallNotice = (msg: string) => {
+    setCallNotice(msg);
+    if (noticeTimerRef.current) clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => setCallNotice(null), 5000);
+  };
+
+  // Outgoing call that nobody answers: stop ringing after 45s.
+  useEffect(() => {
+    if (!activeCall || !activeCall.isCaller || activeCall.accepted) return;
+    const roomId = activeCall.roomId;
+    const t = window.setTimeout(() => {
+      if (activeCallRef.current?.roomId !== roomId || activeCallRef.current.accepted) return;
+      socket.emit('call-ended', { roomId });
+      setActiveCall(null);
+      showCallNotice('No answer.');
+    }, 45000);
+    return () => clearTimeout(t);
+  }, [activeCall?.roomId, activeCall?.accepted]);
   const [raisedHandsAlert, setRaisedHandsAlert] = useState<{ cabinNumber: number; studentName: string }[]>([]);
 
   const [filterType, setFilterType] = useState<'ALL' | 'ONLINE' | 'SPEAKING' | 'HANDS' | 'INCALL'>('ALL');
@@ -75,7 +97,19 @@ export function App() {
     } catch { /* noop */ }
   };
 
+  // Tell the current peer we're leaving (used before switching to another call).
+  const endCurrentCall = () => {
+    const cur = activeCallRef.current;
+    if (!cur) return;
+    socket.emit('call-ended', {
+      targetSocketId: cur.peerSocketId,
+      cabinNumber: cur.peerCabin || user?.cabinNumber || undefined,
+      roomId: cur.roomId,
+    });
+  };
+
   const acceptCall = (callData: any) => {
+    if (activeCallRef.current && activeCallRef.current.roomId !== callData.roomId) endCurrentCall();
     socket.emit('call-response', {
       accepted: true,
       callerSocketId: callData.fromSocketId,
@@ -109,10 +143,15 @@ export function App() {
       playChime();
     });
 
-    socket.on('call-response-received', (data: { accepted: boolean; responderSocketId: string; roomId: string; responderName: string }) => {
+    socket.on('call-response-received', (data: { accepted: boolean; responderSocketId: string; roomId: string; responderName: string; reason?: string }) => {
       if (data.accepted) {
         setActiveCall((prev) => (prev && prev.roomId === data.roomId ? { ...prev, peerSocketId: data.responderSocketId, accepted: true } : prev));
       } else {
+        if (activeCallRef.current?.roomId === data.roomId) {
+          showCallNotice(data.reason === 'UNAVAILABLE'
+            ? 'Call could not connect — the other side is offline or unavailable.'
+            : 'Call was declined.');
+        }
         setActiveCall((prev) => (prev && prev.roomId === data.roomId ? null : prev));
       }
     });
@@ -124,6 +163,11 @@ export function App() {
         return null;
       });
       setIncomingCall((prev: any) => (prev && data?.roomId && prev.roomId !== data.roomId ? prev : null));
+    });
+
+    // Caller hung up before we answered, or another professor already took it.
+    socket.on('call-dismiss', (data: { roomId: string }) => {
+      setIncomingCall((prev: any) => (prev && prev.roomId === data?.roomId ? null : prev));
     });
 
     socket.on('hand-raised', (data) => {
@@ -176,7 +220,7 @@ export function App() {
     });
 
     return () => {
-      socket.off('incoming-call'); socket.off('call-response-received'); socket.off('call-ended-by-peer');
+      socket.off('incoming-call'); socket.off('call-response-received'); socket.off('call-ended-by-peer'); socket.off('call-dismiss');
       socket.off('hand-raised'); socket.off('hand-lowered'); socket.off('cabin-snapshot');
       socket.off('cabin-updated'); socket.off('cabin-audio-level'); socket.off('cabin-screen-update');
     };
@@ -184,9 +228,10 @@ export function App() {
   }, [user]);
 
   const handleLoginSuccess = (u: User, t: string) => { setUser(u); setToken(t); connectSocket(u); };
-  const handleLogout = () => { disconnectSocket(); localStorage.removeItem('arabic_lab_token'); setUser(null); setToken(null); setActiveCall(null); setActiveMonitorCabin(null); };
+  const handleLogout = () => { endCurrentCall(); disconnectSocket(); localStorage.removeItem('arabic_lab_token'); setUser(null); setToken(null); setActiveCall(null); setActiveMonitorCabin(null); };
 
   const handleStartCall = (target: Cabin | number | 'PROFESSOR', type: 'VIDEO' | 'AUDIO') => {
+    endCurrentCall();
     if (target === 'PROFESSOR') {
       const roomId = `prof-call-${user?.cabinNumber || 1}-${Date.now()}`;
       setActiveCall({ roomId, peerSocketId: '', peerName: 'Professor', peerRole: 'PROFESSOR', callType: type, isCaller: true });
@@ -269,6 +314,12 @@ export function App() {
         />
       )}
 
+      {callNotice && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[70] px-4 py-2.5 rounded-xl bg-slate-900/95 border border-amber-500/60 text-xs text-amber-200 shadow-xl">
+          {callNotice}
+        </div>
+      )}
+
       {user.role === 'STUDENT' ? (
         <StudentCabinView user={user} onStartCall={(t, ty) => handleStartCall(t, ty)} language={language} />
       ) : (
@@ -321,7 +372,8 @@ export function App() {
 
       {broadcastOpen && <BroadcastStudioModal currentUser={user || undefined} onClose={() => setBroadcastOpen(false)} language={language} />}
       {practiceOpen && <PracticeMediaModal cabins={cabins} onClose={() => setPracticeOpen(false)} language={language} />}
-      {activeCall && user && <CallModal call={activeCall} currentUser={user} onEndCall={() => { if (activeCall) socket.emit('call-ended', { targetSocketId: activeCall.peerSocketId, cabinNumber: activeCall.peerCabin, roomId: activeCall.roomId }); setActiveCall(null); }} language={language} />}
+      {/* key: a new call always gets a fresh CallModal (new media + peer) */}
+      {activeCall && user && <CallModal key={activeCall.roomId} call={activeCall} currentUser={user} onEndCall={() => setActiveCall(null)} language={language} />}
       {recordingsOpen && <RecordingsModal recordings={recordings} onClose={() => setRecordingsOpen(false)} onRefresh={loadLabData} language={language} />}
       {adminOpen && <AdminModal onClose={() => setAdminOpen(false)} language={language} />}
     </div>

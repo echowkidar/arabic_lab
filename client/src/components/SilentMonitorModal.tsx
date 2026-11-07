@@ -4,7 +4,7 @@ import { X, Eye, Camera, CameraOff, Volume2, VolumeX, Disc, CheckCircle, Chevron
 import { renderOfflineWorkstation } from '../services/screenSimulators';
 import { uploadRecording, logAudit } from '../services/api';
 import { socket } from '../services/socket';
-import { createPeer, closePeer } from '../services/rtcEngine';
+import { createPeer, closePeer, RtcMeta } from '../services/rtcEngine';
 
 interface SilentMonitorModalProps {
   cabin: Cabin;
@@ -41,32 +41,48 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
   const recordTimerRef = useRef<number | null>(null);
   const modalRef = useRef<HTMLDivElement | null>(null);
 
-  const sessionId = `monitor:${cabin.cabinNumber}:${socket.id}`;
+  const isAudioListeningRef = useRef(isAudioListening);
+  isAudioListeningRef.current = isAudioListening;
 
   // Subscribe to the cabin's live A/V over WebRTC
   useEffect(() => {
     setHasLiveVideo(false);
     setHasWebcam(false);
+    // Unique per open, so late signals from a previous session can't leak in.
+    const sessionId = `monitor:${cabin.cabinNumber}:${socket.id}:${Date.now()}`;
+    let meta: RtcMeta = {};
+    const inbound = new Map<string, MediaStream>();
+
+    const showMain = (stream: MediaStream) => {
+      screenStreamInRef.current = stream;
+      if (mainVideoRef.current && mainVideoRef.current.srcObject !== stream) {
+        mainVideoRef.current.srcObject = stream;
+        mainVideoRef.current.muted = !isAudioListeningRef.current;
+      }
+      mainVideoRef.current?.play().catch(() => {});
+      if (stream.getVideoTracks().length > 0) setHasLiveVideo(true);
+    };
+    const showCam = (stream: MediaStream) => {
+      if (pipVideoRef.current && pipVideoRef.current.srcObject !== stream) pipVideoRef.current.srcObject = stream;
+      pipVideoRef.current?.play().catch(() => {});
+      setHasWebcam(true);
+    };
+    // The student tells us which stream id is the webcam; without that hint,
+    // fall back to "the stream carrying audio is the main one".
+    const route = (stream: MediaStream) => {
+      const isCam = meta.cam ? stream.id === meta.cam
+        : meta.main ? stream.id !== meta.main
+        : stream.getAudioTracks().length === 0;
+      if (isCam) showCam(stream); else showMain(stream);
+    };
+
     createPeer({
       sessionId,
       remoteSocketId: cabin.socketId || '',
       purpose: 'monitor',
       polite: true,
-      onTrack: (stream) => {
-        const hasAudio = stream.getAudioTracks().length > 0;
-        if (hasAudio) {
-          screenStreamInRef.current = stream;
-          if (mainVideoRef.current) {
-            mainVideoRef.current.srcObject = stream;
-            mainVideoRef.current.muted = !isAudioListening;
-            mainVideoRef.current.play().catch(() => {});
-          }
-          if (stream.getVideoTracks().length > 0) setHasLiveVideo(true);
-        } else if (stream.getVideoTracks().length > 0) {
-          if (pipVideoRef.current) { pipVideoRef.current.srcObject = stream; pipVideoRef.current.play().catch(() => {}); }
-          setHasWebcam(true);
-        }
-      },
+      onMeta: (m) => { meta = m; inbound.forEach(route); },
+      onTrack: (stream) => { inbound.set(stream.id, stream); route(stream); },
     });
     logAudit(cabin.cabinNumber, 'SCREEN_VIEW').catch(() => {});
     socket.emit('monitor:request', { cabinNumber: cabin.cabinNumber, sessionId });
@@ -213,17 +229,16 @@ export const SilentMonitorModal: React.FC<SilentMonitorModalProps> = ({
           ))}
 
           {/* Webcam PiP */}
-          {isWebcamActive && (
-            <div className="absolute top-6 left-6 w-40 h-40 rounded-full overflow-hidden border-2 border-cyan-400/80 shadow-2xl bg-slate-900 z-10">
-              <video ref={pipVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${hasWebcam ? 'block' : 'hidden'}`} />
-              {!hasWebcam && (
-                <div className="w-full h-full flex flex-col items-center justify-center text-center p-2">
-                  <div className="text-3xl mb-1 animate-pulse">👤</div>
-                  <div className="text-[9px] text-slate-400 uppercase tracking-widest">CABIN {pad} CAM</div>
-                </div>
-              )}
-            </div>
-          )}
+          {/* Always mounted (hidden when toggled off) so the stream stays attached */}
+          <div className={`absolute top-6 left-6 w-40 h-40 rounded-full overflow-hidden border-2 border-cyan-400/80 shadow-2xl bg-slate-900 z-10 ${isWebcamActive ? 'block' : 'hidden'}`}>
+            <video ref={pipVideoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${hasWebcam ? 'block' : 'hidden'}`} />
+            {!hasWebcam && (
+              <div className="w-full h-full flex flex-col items-center justify-center text-center p-2">
+                <div className="text-3xl mb-1 animate-pulse">👤</div>
+                <div className="text-[9px] text-slate-400 uppercase tracking-widest">CABIN {pad} CAM</div>
+              </div>
+            )}
+          </div>
 
           <div className="absolute bottom-4 left-6 right-6 flex items-center justify-between bg-black/60 backdrop-blur-md px-4 py-2 rounded-xl border border-emerald-900/40 text-xs text-slate-300 pointer-events-none">
             <span className="flex items-center gap-1.5 text-emerald-400 font-bold font-mono"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />{hasLiveVideo ? 'LIVE WEBRTC • SCREEN + DESKTOP AUDIO' : 'CONNECTING • LAN'}</span>

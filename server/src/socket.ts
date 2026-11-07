@@ -35,7 +35,18 @@ for (let i = 1; i <= 25; i++) {
 }
 
 const socketSessionMap = new Map<string, SocketUser>();
-const activeBroadcasts = new Map<string, { type: 'ALL' | 'SELECTED'; selectedCabins: number[] }>();
+const activeBroadcasts = new Map<string, {
+  type: 'ALL' | 'SELECTED';
+  selectedCabins: number[];
+  title: string;
+  options: { hasScreen: boolean; hasWebcam: boolean; hasAudio: boolean };
+}>();
+
+// 1:1 call bookkeeping so a hang-up / disconnect always reaches the right peer.
+interface PendingCall { callerSocketId: string; callerCabin?: number; ringing: string[] | 'professors' }
+interface LiveCall { sockets: [string, string]; cabins: number[] }
+const pendingCalls = new Map<string, PendingCall>();
+const liveCalls = new Map<string, LiveCall>();
 
 export function getConnectedCabinsState() {
   return cabinStates;
@@ -45,6 +56,26 @@ function cabinOwnedBy(socket: Socket): number | null {
   const u = socketSessionMap.get(socket.id);
   if (u && u.role === 'STUDENT' && u.cabinNumber) return Number(u.cabinNumber);
   return null;
+}
+
+function cabinOfSocket(socketId: string): number | undefined {
+  const u = socketSessionMap.get(socketId);
+  return u?.role === 'STUDENT' && u.cabinNumber ? Number(u.cabinNumber) : undefined;
+}
+
+function setCabinInCall(io: SocketIOServer, cabinNumber: number | undefined, inCall: boolean) {
+  if (!cabinNumber || !cabinStates[cabinNumber]) return;
+  cabinStates[cabinNumber].inCall = inCall;
+  io.to('professors').emit('cabin-updated', cabinStates[cabinNumber]);
+}
+
+function dismissRinging(io: SocketIOServer, roomId: string, call: PendingCall, exceptSocketId?: string) {
+  const targets = call.ringing === 'professors' ? ['professors'] : call.ringing;
+  targets.forEach((t) => {
+    if (t === exceptSocketId) return;
+    if (t === 'professors' && exceptSocketId) io.to(t).except(exceptSocketId).emit('call-dismiss', { roomId });
+    else io.to(t).emit('call-dismiss', { roomId });
+  });
 }
 
 export function setupSocketServer(io: SocketIOServer) {
@@ -97,6 +128,17 @@ export function setupSocketServer(io: SocketIOServer) {
           };
           io.to('professors').emit('cabin-updated', cabinStates[cabNum]);
           console.log(`💻 Cabin ${cabNum} (${name}) online`);
+
+          // Late joiner / reconnect: hand over any broadcast that targets this cabin.
+          activeBroadcasts.forEach((b, profSocketId) => {
+            if (b.type === 'SELECTED' && b.selectedCabins.length > 0 && !b.selectedCabins.includes(cabNum)) return;
+            socket.emit('broadcast:incoming', {
+              professorSocketId: profSocketId,
+              cabinNumber: cabNum,
+              title: b.title,
+              options: b.options,
+            });
+          });
         }
       }
     });
@@ -158,6 +200,7 @@ export function setupSocketServer(io: SocketIOServer) {
       purpose: 'call' | 'monitor' | 'broadcast';
       description?: any;
       candidate?: any;
+      meta?: Record<string, string>;
     }) => {
       if (!data?.toSocketId) return;
       io.to(data.toSocketId).emit('rtc:signal', {
@@ -166,6 +209,7 @@ export function setupSocketServer(io: SocketIOServer) {
         purpose: data.purpose,
         description: data.description,
         candidate: data.candidate,
+        meta: data.meta,
       });
     });
 
@@ -201,7 +245,7 @@ export function setupSocketServer(io: SocketIOServer) {
     }) => {
       if (auth.role !== 'PROFESSOR' && auth.role !== 'ADMIN') return;
       const selected = data.selectedCabins || [];
-      activeBroadcasts.set(socket.id, { type: data.type, selectedCabins: selected });
+      activeBroadcasts.set(socket.id, { type: data.type, selectedCabins: selected, title: data.title, options: data.options });
 
       const targetNums =
         data.type === 'SELECTED' && selected.length > 0
@@ -277,50 +321,107 @@ export function setupSocketServer(io: SocketIOServer) {
         roomId: data.roomId,
       };
 
+      const unavailable = () => socket.emit('call-response-received', {
+        accepted: false, responderSocketId: '', roomId: data.roomId, responderName: '', reason: 'UNAVAILABLE',
+      });
+      const callerCabin = cabinOfSocket(socket.id);
+
       // Student -> professor (no specific target): ring all professors
-      if (data.fromRole === 'STUDENT' && !data.targetCabin) {
+      if (auth.role === 'STUDENT' && !data.targetCabin) {
+        if (!io.sockets.adapter.rooms.get('professors')?.size) return unavailable();
+        pendingCalls.set(data.roomId, { callerSocketId: socket.id, callerCabin, ringing: 'professors' });
         io.to('professors').emit('incoming-call', base);
         return;
       }
 
-      let recipient = data.targetSocketId;
-      if (!recipient && data.targetCabin && cabinStates[Number(data.targetCabin)]?.socketId) {
-        recipient = cabinStates[Number(data.targetCabin)].socketId!;
+      // Always resolve the cabin's CURRENT socket (the client copy may be stale).
+      let recipient: string | undefined;
+      if (data.targetCabin && cabinStates[Number(data.targetCabin)]?.online) {
+        recipient = cabinStates[Number(data.targetCabin)].socketId || undefined;
       }
-      if (recipient) io.to(recipient).emit('incoming-call', base);
-      else console.warn(`Call target unreachable: cabin=${data.targetCabin}`);
+      if (!recipient && data.targetSocketId && io.sockets.sockets.has(data.targetSocketId)) {
+        recipient = data.targetSocketId;
+      }
+      if (!recipient || recipient === socket.id) {
+        console.warn(`Call target unreachable: cabin=${data.targetCabin}`);
+        return unavailable();
+      }
+      pendingCalls.set(data.roomId, { callerSocketId: socket.id, callerCabin, ringing: [recipient] });
+      io.to(recipient).emit('incoming-call', base);
     });
 
     socket.on('call-response', (data: {
       accepted: boolean; callerSocketId: string; roomId: string;
       responderName: string; responderCabin?: number;
     }) => {
-      io.to(data.callerSocketId).emit('call-response-received', {
+      const pending = pendingCalls.get(data.roomId);
+      // Caller already hung up / call already taken by another professor
+      if (!pending) {
+        if (data.accepted) socket.emit('call-ended-by-peer', { roomId: data.roomId });
+        return;
+      }
+      pendingCalls.delete(data.roomId);
+      dismissRinging(io, data.roomId, pending, socket.id);
+
+      io.to(pending.callerSocketId).emit('call-response-received', {
         accepted: data.accepted,
         responderSocketId: socket.id,
         roomId: data.roomId,
         responderName: data.responderName,
         responderCabin: data.responderCabin,
       });
-      if (data.accepted && data.responderCabin && cabinStates[Number(data.responderCabin)]) {
-        cabinStates[Number(data.responderCabin)].inCall = true;
-        io.to('professors').emit('cabin-updated', cabinStates[Number(data.responderCabin)]);
+      if (data.accepted) {
+        const responderCabin = cabinOfSocket(socket.id);
+        const cabins = [pending.callerCabin, responderCabin].filter(Boolean) as number[];
+        liveCalls.set(data.roomId, { sockets: [pending.callerSocketId, socket.id], cabins });
+        cabins.forEach((c) => setCabinInCall(io, c, true));
       }
     });
 
-    // FIXED: notify ONLY the peer, never broadcast to everyone.
+    // Notify ONLY the peer (never broadcast); also cancels a call still ringing.
     socket.on('call-ended', (data: { targetSocketId?: string; cabinNumber?: number; roomId?: string }) => {
+      const roomId = data.roomId || '';
+      const pending = pendingCalls.get(roomId);
+      if (pending && pending.callerSocketId === socket.id) {
+        pendingCalls.delete(roomId);
+        dismissRinging(io, roomId, pending);
+      }
+      const live = liveCalls.get(roomId);
+      if (live) {
+        liveCalls.delete(roomId);
+        const other = live.sockets.find((s) => s !== socket.id);
+        if (other) io.to(other).emit('call-ended-by-peer', { roomId });
+        live.cabins.forEach((c) => setCabinInCall(io, c, false));
+        return;
+      }
       if (data.targetSocketId) {
         io.to(data.targetSocketId).emit('call-ended-by-peer', { roomId: data.roomId });
       }
-      if (data.cabinNumber && cabinStates[Number(data.cabinNumber)]) {
-        cabinStates[Number(data.cabinNumber)].inCall = false;
-        io.to('professors').emit('cabin-updated', cabinStates[Number(data.cabinNumber)]);
-      }
+      setCabinInCall(io, data.cabinNumber ? Number(data.cabinNumber) : undefined, false);
     });
 
     // ---- Disconnect cleanup ----
     socket.on('disconnect', () => {
+      // End / cancel any call this socket was part of so the other side never hangs.
+      pendingCalls.forEach((p, roomId) => {
+        if (p.callerSocketId === socket.id) {
+          pendingCalls.delete(roomId);
+          dismissRinging(io, roomId, p);
+        } else if (Array.isArray(p.ringing) && p.ringing.includes(socket.id)) {
+          pendingCalls.delete(roomId);
+          io.to(p.callerSocketId).emit('call-response-received', {
+            accepted: false, responderSocketId: '', roomId, responderName: '', reason: 'UNAVAILABLE',
+          });
+        }
+      });
+      liveCalls.forEach((c, roomId) => {
+        if (!c.sockets.includes(socket.id)) return;
+        liveCalls.delete(roomId);
+        const other = c.sockets.find((s) => s !== socket.id);
+        if (other) io.to(other).emit('call-ended-by-peer', { roomId });
+        c.cabins.forEach((n) => setCabinInCall(io, n, false));
+      });
+
       if (activeBroadcasts.has(socket.id)) {
         activeBroadcasts.delete(socket.id);
         io.to('students').emit('broadcast:ended', { professorSocketId: socket.id });

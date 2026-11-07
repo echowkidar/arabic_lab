@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Language } from '../types';
 import { X, Maximize2, Minimize2, Radio, Volume2, VolumeX } from 'lucide-react';
 import { socket } from '../services/socket';
-import { createPeer, closePeer } from '../services/rtcEngine';
+import { createPeer, closePeer, RtcMeta } from '../services/rtcEngine';
 
 interface BroadcastViewerModalProps {
   professorSocketId: string;
@@ -22,32 +22,52 @@ export const BroadcastViewerModal: React.FC<BroadcastViewerModalProps> = ({
   const [isMuted, setIsMuted] = useState(false);
   const [hasVideo, setHasVideo] = useState(false);
   const [hasWebcam, setHasWebcam] = useState(false);
+  const [hasAudio, setHasAudio] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mainVideoRef = useRef<HTMLVideoElement | null>(null);
   const pipVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const sessionId = `bcast:${professorSocketId}:${cabinNumber}`;
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
 
   useEffect(() => {
+    let meta: RtcMeta = {};
+    const inbound = new Map<string, MediaStream>();
+    let mainStream: MediaStream | null = null;
+    let camStream: MediaStream | null = null;
+
+    const refresh = () => {
+      setHasVideo(Boolean(mainStream?.getVideoTracks().length) && meta.screen !== 'off');
+      setHasWebcam(Boolean(camStream?.getVideoTracks().length) && meta.camOn !== 'off');
+      setHasAudio(Boolean(mainStream?.getAudioTracks().length));
+    };
+    const route = (stream: MediaStream) => {
+      const isCam = meta.cam ? stream.id === meta.cam
+        : meta.main ? stream.id !== meta.main
+        : stream.getAudioTracks().length === 0;
+      if (isCam) {
+        camStream = stream;
+        if (pipVideoRef.current && pipVideoRef.current.srcObject !== stream) pipVideoRef.current.srcObject = stream;
+        pipVideoRef.current?.play().catch(() => {});
+      } else {
+        mainStream = stream;
+        if (mainVideoRef.current && mainVideoRef.current.srcObject !== stream) {
+          mainVideoRef.current.srcObject = stream;
+          mainVideoRef.current.muted = isMutedRef.current;
+        }
+        mainVideoRef.current?.play().catch(() => {});
+      }
+      refresh();
+    };
+
     createPeer({
       sessionId,
       remoteSocketId: professorSocketId,
       purpose: 'broadcast',
       polite: true,
-      onTrack: (stream) => {
-        const hasAudio = stream.getAudioTracks().length > 0;
-        if (hasAudio) {
-          if (mainVideoRef.current) {
-            mainVideoRef.current.srcObject = stream;
-            mainVideoRef.current.muted = isMuted;
-            mainVideoRef.current.play().catch(() => {});
-          }
-          if (stream.getVideoTracks().length > 0) setHasVideo(true);
-        } else if (stream.getVideoTracks().length > 0) {
-          if (pipVideoRef.current) { pipVideoRef.current.srcObject = stream; pipVideoRef.current.play().catch(() => {}); }
-          setHasWebcam(true);
-        }
-      },
+      onMeta: (m) => { meta = m; inbound.forEach(route); refresh(); },
+      onTrack: (stream) => { inbound.set(stream.id, stream); route(stream); },
     });
     // Tell the professor we're ready so it offers us the stream
     socket.emit('broadcast:viewer-ready', { professorSocketId, cabinNumber });
@@ -94,16 +114,19 @@ export const BroadcastViewerModal: React.FC<BroadcastViewerModalProps> = ({
           {!hasVideo && (
             <div className="flex flex-col items-center justify-center text-center p-8 text-slate-400">
               <div className="w-20 h-20 rounded-2xl bg-amber-950/60 border border-amber-500/40 flex items-center justify-center text-4xl mb-4 animate-pulse">🎙️</div>
-              <h4 className="text-lg font-bold text-white font-arabic">{isArabic ? 'جارٍ استقبال البث…' : 'Connecting to professor live stream…'}</h4>
+              <h4 className="text-lg font-bold text-white font-arabic">
+                {hasAudio
+                  ? (isArabic ? 'البث الصوتي مباشر' : 'Live audio from professor')
+                  : (isArabic ? 'جارٍ استقبال البث…' : 'Connecting to professor live stream…')}
+              </h4>
               <p className="text-xs text-amber-400 mt-2 font-mono">WebRTC • LAN</p>
             </div>
           )}
-          {hasWebcam && (
-            <div className="absolute bottom-4 right-4 w-48 h-36 rounded-xl overflow-hidden border-2 border-amber-400/80 shadow-2xl bg-slate-900 z-10">
-              <video ref={pipVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-              <div className="absolute bottom-1 left-2 right-2 bg-black/70 px-1.5 py-0.5 rounded text-[9px] text-amber-300 font-mono font-bold text-center">PROFESSOR CAM</div>
-            </div>
-          )}
+          {/* Always mounted so the stream can attach before it's shown */}
+          <div className={`absolute bottom-4 right-4 w-48 h-36 rounded-xl overflow-hidden border-2 border-amber-400/80 shadow-2xl bg-slate-900 z-10 ${hasWebcam ? 'block' : 'hidden'}`}>
+            <video ref={pipVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+            <div className="absolute bottom-1 left-2 right-2 bg-black/70 px-1.5 py-0.5 rounded text-[9px] text-amber-300 font-mono font-bold text-center">PROFESSOR CAM</div>
+          </div>
         </div>
       </div>
     </div>

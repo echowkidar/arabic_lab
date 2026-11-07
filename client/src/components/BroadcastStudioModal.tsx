@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Language, User } from '../types';
 import { X, Radio, Monitor, Camera, CameraOff, Mic, MicOff, Users } from 'lucide-react';
 import { socket } from '../services/socket';
-import { createPeer, closePeer, closePeersByPurpose, replaceVideoTrack, replaceAudioTrack, addMediaTrack } from '../services/rtcEngine';
+import { createPeer, closePeersByPurpose, addMediaTrack, getSender, setOutgoingTrack, sendMeta } from '../services/rtcEngine';
 import { getMicStream, getWebcamStream, getScreenStream, mixAudioTracks, stopStream, MixedAudio } from '../services/mediaCapture';
 
 interface BroadcastStudioModalProps {
@@ -28,36 +28,76 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
   const webcamStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const mixedRef = useRef<MixedAudio | null>(null);
-  const outRef = useRef<MediaStream>(new MediaStream());         // main outgoing (screen/placeholder video + audio)
-  const audioTrackRef = useRef<MediaStreamTrack | null>(null);
-  const peersRef = useRef<Map<number, string>>(new Map());        // cabinNumber -> sessionId
+  const outRef = useRef<MediaStream>(new MediaStream());         // main outgoing (screen video + voice/desktop audio)
+  const camOutRef = useRef<MediaStream>(new MediaStream());      // webcam PiP (separate stream)
+  // cabinNumber -> peer + its senders, so screen/audio swaps never touch the webcam sender
+  const peersRef = useRef<Map<number, { sessionId: string; audio: RTCRtpSender | null; video: RTCRtpSender | null }>>(new Map());
+  const isBroadcastingRef = useRef(false);
+  const isScreenSharingRef = useRef(false);
   const screenVideoRef = useRef<HTMLVideoElement | null>(null);
   const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const mySocketId = () => socket.id || '';
+
+  const currentAudio = () => outRef.current.getAudioTracks()[0] || null;
+  const currentScreen = () => outRef.current.getVideoTracks()[0] || null;
+  const setOutTrack = (kind: 'audio' | 'video', track: MediaStreamTrack | null) => {
+    const out = outRef.current;
+    (kind === 'audio' ? out.getAudioTracks() : out.getVideoTracks()).forEach((t) => out.removeTrack(t));
+    if (track) out.addTrack(track);
+  };
+  const camOnRef = useRef(true);
+  const metaFor = () => ({
+    main: outRef.current.id,
+    cam: camOutRef.current.id,
+    screen: isScreenSharingRef.current ? 'on' : 'off',
+    camOn: camOnRef.current ? 'on' : 'off',
+  });
 
   // Acquire mic + webcam on mount
   useEffect(() => {
     (async () => {
       try {
         const mic = await getMicStream().catch(() => null);
-        if (mic) { micStreamRef.current = mic; audioTrackRef.current = mic.getAudioTracks()[0]; outRef.current.addTrack(mic.getAudioTracks()[0]); }
+        if (mic) { micStreamRef.current = mic; setOutTrack('audio', mic.getAudioTracks()[0]); }
         const cam = await getWebcamStream().catch(() => null);
-        if (cam) { webcamStreamRef.current = cam; if (webcamVideoRef.current) webcamVideoRef.current.srcObject = cam; }
+        if (cam) {
+          webcamStreamRef.current = cam;
+          camOutRef.current.addTrack(cam.getVideoTracks()[0]);
+          if (webcamVideoRef.current) webcamVideoRef.current.srcObject = cam;
+        }
       } catch (e: any) { setError(e?.message || 'Device error'); }
     })();
     return () => {
+      // Closing the studio while on air must also end the students' viewers.
+      if (isBroadcastingRef.current) socket.emit('broadcast:stop');
       closePeersByPurpose('broadcast');
       stopStream(micStreamRef.current); stopStream(webcamStreamRef.current); stopStream(screenStreamRef.current);
       mixedRef.current?.stop();
     };
   }, []);
 
-  const applyAudioToPeers = () => {
-    peersRef.current.forEach((sid) => replaceAudioTrack(sid, audioTrackRef.current));
-  };
-  const applyVideoToPeers = (track: MediaStreamTrack | null) => {
-    peersRef.current.forEach((sid) => replaceVideoTrack(sid, track));
+  // Preview <video> elements mount conditionally - attach streams once they exist.
+  useEffect(() => {
+    if (isScreenSharing && screenVideoRef.current && screenStreamRef.current) {
+      screenVideoRef.current.srcObject = screenStreamRef.current;
+      screenVideoRef.current.play().catch(() => {});
+    }
+  }, [isScreenSharing]);
+  useEffect(() => {
+    if (shareWebcam && webcamVideoRef.current && webcamStreamRef.current) {
+      webcamVideoRef.current.srcObject = webcamStreamRef.current;
+    }
+  }, [shareWebcam]);
+
+  const applyToPeers = () => {
+    const audio = currentAudio();
+    const screen = currentScreen();
+    peersRef.current.forEach((p) => {
+      p.audio = setOutgoingTrack(p.sessionId, p.audio, audio, outRef.current);
+      p.video = setOutgoingTrack(p.sessionId, p.video, screen, outRef.current);
+      sendMeta(p.sessionId, metaFor());
+    });
   };
 
   const startScreen = async () => {
@@ -67,19 +107,17 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
       screenStreamRef.current = scr;
       const v = scr.getVideoTracks()[0];
       const sys = scr.getAudioTracks()[0];
-      // put screen video into outgoing
-      outRef.current.getVideoTracks().forEach((t) => outRef.current.removeTrack(t));
-      outRef.current.addTrack(v);
+      setOutTrack('video', v);
       if (screenVideoRef.current) { screenVideoRef.current.srcObject = scr; screenVideoRef.current.play().catch(() => {}); }
-      // mix mic + system audio
+      // mix mic + system audio so students hear the voice AND the file/video
       const mic = micStreamRef.current?.getAudioTracks()[0];
       if (sys) {
         mixedRef.current?.stop();
         mixedRef.current = mixAudioTracks([mic, sys].filter(Boolean) as MediaStreamTrack[]);
-        audioTrackRef.current = mixedRef.current?.track || mic || null;
+        setOutTrack('audio', mixedRef.current?.track || mic || null);
       }
-      applyVideoToPeers(v);
-      applyAudioToPeers();
+      isScreenSharingRef.current = true;
+      applyToPeers();
       v.onended = () => stopScreen();
       setIsScreenSharing(true);
     } catch (e: any) {
@@ -87,36 +125,45 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
     }
   };
   const stopScreen = () => {
+    if (!isScreenSharingRef.current) return;
+    isScreenSharingRef.current = false;
     stopStream(screenStreamRef.current); screenStreamRef.current = null;
-    outRef.current.getVideoTracks().forEach((t) => outRef.current.removeTrack(t));
+    setOutTrack('video', null);
     mixedRef.current?.stop(); mixedRef.current = null;
-    audioTrackRef.current = micStreamRef.current?.getAudioTracks()[0] || null;
-    applyVideoToPeers(null);
-    applyAudioToPeers();
+    setOutTrack('audio', micStreamRef.current?.getAudioTracks()[0] || null);
+    applyToPeers();
     setIsScreenSharing(false);
   };
 
   // Handle students announcing readiness -> create sendonly peer + offer
   useEffect(() => {
     const onReady = (data: { cabinNumber: number; studentSocketId: string }) => {
-      if (!isBroadcasting) return;
+      if (!isBroadcastingRef.current) return;
       const sessionId = `bcast:${mySocketId()}:${data.cabinNumber}`;
-      closePeer(sessionId);
+      const out = outRef.current;
       createPeer({
         sessionId, remoteSocketId: data.studentSocketId, purpose: 'broadcast',
-        polite: false, localStream: outRef.current,
+        polite: false, localStream: out,
       });
-      const camTrack = shareWebcam ? webcamStreamRef.current?.getVideoTracks()[0] : undefined;
-      if (camTrack) addMediaTrack(sessionId, camTrack, new MediaStream([camTrack]));
-      peersRef.current.set(data.cabinNumber, sessionId);
+      const audio = currentAudio();
+      const screen = currentScreen();
+      const camTrack = camOutRef.current.getVideoTracks()[0];
+      if (camTrack) addMediaTrack(sessionId, camTrack, camOutRef.current);
+      sendMeta(sessionId, metaFor());
+      peersRef.current.set(data.cabinNumber, {
+        sessionId,
+        audio: audio ? getSender(sessionId, audio) : null,
+        video: screen ? getSender(sessionId, screen) : null,
+      });
       setViewerCount(peersRef.current.size);
     };
     socket.on('broadcast:viewer-ready', onReady);
     return () => { socket.off('broadcast:viewer-ready', onReady); };
-  }, [isBroadcasting, shareWebcam]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const startBroadcast = () => {
-    if (!shareMic) audioTrackRef.current = null;
+    isBroadcastingRef.current = true;
     setIsBroadcasting(true);
     socket.emit('broadcast:start', {
       type: target,
@@ -126,6 +173,7 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
     });
   };
   const stopBroadcast = () => {
+    isBroadcastingRef.current = false;
     setIsBroadcasting(false);
     socket.emit('broadcast:stop');
     closePeersByPurpose('broadcast');
@@ -141,7 +189,9 @@ export const BroadcastStudioModal: React.FC<BroadcastStudioModalProps> = ({ onCl
   };
   const toggleWebcam = () => {
     const next = !shareWebcam; setShareWebcam(next);
+    camOnRef.current = next;
     webcamStreamRef.current?.getVideoTracks().forEach((t) => (t.enabled = next));
+    peersRef.current.forEach((p) => sendMeta(p.sessionId, metaFor()));
   };
 
   return (

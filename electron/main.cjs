@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 const { spawn } = require('child_process');
 
-const APP_VERSION = '1.5.1';
+const APP_VERSION = '1.5.2';
 
 // Command line switches for WebRTC and Screen Capture
 const LAN_ORIGINS = process.env.LAB_LAN_ORIGINS ||
@@ -309,9 +309,24 @@ function createTray() {
 }
 
 // Silent Background Auto-Updater Engine
+// true only when `remote` is strictly newer than `local` (e.g. 1.5.10 > 1.5.2),
+// so a server still serving an older build can never downgrade this install.
+function isNewerVersion(remote, local) {
+  const a = String(remote).split('.').map((n) => parseInt(n, 10) || 0);
+  const b = String(local).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+let updateInProgress = false;
+
 function checkForAppUpdates(serverBaseUrl) {
   try {
-    if (!serverBaseUrl) return;
+    if (!serverBaseUrl || updateInProgress) return;
     const versionUrl = `${serverBaseUrl}/api/app/version`;
     const client = versionUrl.startsWith('https') ? https : http;
 
@@ -322,8 +337,9 @@ function checkForAppUpdates(serverBaseUrl) {
       res.on('end', () => {
         try {
           const info = JSON.parse(data);
-          if (info.version && info.version !== APP_VERSION) {
+          if (info.version && isNewerVersion(info.version, APP_VERSION)) {
             console.log(`🚀 New ArabicLab version detected on server: ${info.version} (current: ${APP_VERSION})`);
+            updateInProgress = true;
             downloadAndApplyUpdate(serverBaseUrl, info.downloadUrl || '/api/download/setup');
           }
         } catch (e) {
@@ -338,7 +354,8 @@ function checkForAppUpdates(serverBaseUrl) {
   }
 }
 
-function downloadAndApplyUpdate(serverBaseUrl, downloadPath) {
+function downloadAndApplyUpdate(serverBaseUrl, downloadPath, redirects = 0) {
+  const fail = () => { updateInProgress = false; };
   try {
     const fullUrl = downloadPath.startsWith('http') ? downloadPath : `${serverBaseUrl}${downloadPath}`;
     const tempExe = path.join(app.getPath('temp'), `ArabicLab-Setup-Update-${Date.now()}.exe`);
@@ -346,15 +363,23 @@ function downloadAndApplyUpdate(serverBaseUrl, downloadPath) {
     const client = fullUrl.startsWith('https') ? https : http;
 
     client.get(fullUrl, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        if (res.headers.location) {
-          downloadAndApplyUpdate('', res.headers.location);
+      if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+        res.resume();
+        file.close();
+        fs.unlink(tempExe, () => {});
+        if (res.headers.location && redirects < 5) {
+          // Location may be relative - resolve against the current URL.
+          downloadAndApplyUpdate('', new URL(res.headers.location, fullUrl).toString(), redirects + 1);
+        } else {
+          fail();
         }
         return;
       }
       if (res.statusCode !== 200) {
+        res.resume();
         file.close();
         fs.unlink(tempExe, () => {});
+        fail();
         return;
       }
       res.pipe(file);
@@ -365,6 +390,7 @@ function downloadAndApplyUpdate(serverBaseUrl, downloadPath) {
             if (stats.size < 10 * 1024 * 1024) {
               console.warn(`⚠️ Update installer binary is too small (${stats.size} bytes), likely a corrupt download or Git LFS pointer. Aborting update.`);
               fs.unlink(tempExe, () => {});
+              fail();
               return;
             }
             console.log(`✅ ArabicLab update downloaded (${(stats.size / (1024 * 1024)).toFixed(1)} MB). Launching silent background installer...`);
@@ -378,6 +404,7 @@ function downloadAndApplyUpdate(serverBaseUrl, downloadPath) {
           } catch (err) {
             console.error('Error verifying update file:', err);
             fs.unlink(tempExe, () => {});
+            fail();
           }
         });
       });
@@ -385,9 +412,11 @@ function downloadAndApplyUpdate(serverBaseUrl, downloadPath) {
       console.warn('Update download error:', err);
       file.close();
       fs.unlink(tempExe, () => {});
+      fail();
     });
   } catch (e) {
     console.warn('Apply update error:', e);
+    fail();
   }
 }
 

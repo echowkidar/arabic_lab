@@ -6,7 +6,7 @@ import { AudioAnalyzer } from '../services/audioAnalyzer';
 import { BroadcastViewerModal } from './BroadcastViewerModal';
 import { PracticePlayer } from './PracticePlayer';
 import { getMicStream, getWebcamStream, getScreenStream, mixAudioTracks, stopStream, isElectron, MixedAudio } from '../services/mediaCapture';
-import { createPeer, closePeer, addMediaTrack } from '../services/rtcEngine';
+import { createPeer, closePeer, addMediaTrack, sendMeta } from '../services/rtcEngine';
 
 interface StudentCabinViewProps {
   user: User;
@@ -37,6 +37,14 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
   const analyzerRef = useRef<AudioAnalyzer | null>(null);
   const webcamVideoRef = useRef<HTMLVideoElement | null>(null);
   const watchersRef = useRef<Set<string>>(new Set()); // active monitor sessionIds
+  // Resolves once the initial mic/webcam attempt finished, so a monitor request
+  // that arrives right after login still publishes mic + webcam.
+  const devicesReadyRef = useRef<{ promise: Promise<void>; resolve: () => void } | null>(null);
+  if (!devicesReadyRef.current) {
+    let resolve = () => {};
+    const promise = new Promise<void>((r) => { resolve = r; });
+    devicesReadyRef.current = { promise, resolve };
+  }
 
   // 1) Auto-acquire mic + webcam on mount (no manual click needed)
   useEffect(() => {
@@ -64,6 +72,7 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
       } catch (e: any) {
         if (!cancelled) setHardwareError(e?.message || 'Device access failed');
       }
+      devicesReadyRef.current?.resolve();
     })();
     return () => {
       cancelled = true;
@@ -107,9 +116,18 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
       }
     };
 
+    const stopped = new Set<string>();
+
     const onMonitorStart = async (data: { professorSocketId: string; sessionId: string }) => {
       const { professorSocketId, sessionId } = data;
+      // Don't wait forever if the camera driver hangs.
+      await Promise.race([devicesReadyRef.current?.promise, new Promise((r) => setTimeout(r, 5000))]);
       const scr = await ensureScreen();
+      if (stopped.has(sessionId)) { // professor already closed the monitor
+        stopped.delete(sessionId);
+        if (watchersRef.current.size === 0) { stopStream(screenStreamRef.current); screenStreamRef.current = null; }
+        return;
+      }
       const micTrack = micStreamRef.current?.getAudioTracks()[0] || null;
       const sysAudio = scr?.getAudioTracks()[0] || null;
 
@@ -134,12 +152,16 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
       });
       // Second video track = webcam (professor shows it as PiP)
       const camTrack = webcamStreamRef.current?.getVideoTracks()[0];
-      if (camTrack) addMediaTrack(sessionId, camTrack, new MediaStream([camTrack]));
+      const camStream = camTrack ? new MediaStream([camTrack]) : null;
+      if (camTrack && camStream) addMediaTrack(sessionId, camTrack, camStream);
+      // Sent before the offer goes out, so the professor can route screen vs. webcam.
+      sendMeta(sessionId, { main: mainStream.id, cam: camStream?.id });
 
       watchersRef.current.add(sessionId);
     };
 
     const onMonitorStop = (data: { sessionId: string }) => {
+      if (!watchersRef.current.has(data.sessionId)) stopped.add(data.sessionId);
       closePeer(data.sessionId);
       watchersRef.current.delete(data.sessionId);
       if (watchersRef.current.size === 0) {

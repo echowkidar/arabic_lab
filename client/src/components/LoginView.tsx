@@ -227,19 +227,16 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess, language, 
               👨‍🏫 Professor
             </button>
 
-            <button
-              onClick={() => handleQuickSelect('cabin01', 'Student@Lab2026')}
-              className="px-2.5 py-1 rounded bg-emerald-950/80 border border-emerald-500/40 text-[11px] font-mono text-emerald-300 hover:bg-emerald-900"
-            >
-              🧑‍🎓 Cabin 01
-            </button>
-
-            <button
-              onClick={() => handleQuickSelect('cabin03', 'Student@Lab2026')}
-              className="px-2.5 py-1 rounded bg-emerald-950/80 border border-emerald-500/40 text-[11px] font-mono text-emerald-300 hover:bg-emerald-900"
-            >
-              🧑‍🎓 Cabin 03
-            </button>
+            {['01', '02', '03', '04'].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => handleQuickSelect(`cabin${n}`, 'Student@Lab2026')}
+                className="px-2.5 py-1 rounded bg-emerald-950/80 border border-emerald-500/40 text-[11px] font-mono text-emerald-300 hover:bg-emerald-900"
+              >
+                🧑‍🎓 Cabin {n}
+              </button>
+            ))}
 
             <button
               onClick={() => handleQuickSelect('admin', 'Admin@Lab2026')}
