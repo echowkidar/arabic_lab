@@ -15,6 +15,8 @@ services:
     volumes:
       - lab_db_data:/app/prisma
       - lab_recordings_data:/app/uploads/recordings
+      - lab_media_data:/app/uploads/media          # professor media library
+      - lab_student_rec_data:/app/uploads/student  # student voice recordings (PIN-protected)
     ports:
       - "5000:5000"
     networks:
@@ -46,3 +48,5 @@ networks:
 volumes:
   lab_db_data:
   lab_recordings_data:
+  lab_media_data:
+  lab_student_rec_data:

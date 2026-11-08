@@ -6,12 +6,15 @@ import { SilentMonitorModal } from './components/SilentMonitorModal';
 import { BroadcastStudioModal } from './components/BroadcastStudioModal';
 import { CallModal } from './components/CallModal';
 import { IncomingCallToast } from './components/IncomingCallToast';
-import { PracticeMediaModal } from './components/PracticeMediaModal';
+import { MediaLibraryModal } from './components/professor/MediaLibraryModal';
+import { SubmissionsModal } from './components/professor/SubmissionsModal';
+import { t } from './i18n';
 import { RecordingsModal } from './components/RecordingsModal';
 import { AdminModal } from './components/AdminModal';
 import { StudentCabinView } from './components/StudentCabinView';
 import { LoginView } from './components/LoginView';
-import { fetchCabins, fetchRecordings, getMe } from './services/api';
+import { fetchCabins, fetchRecordings, getMe, listSubmissions } from './services/api';
+import { StudentRecording } from './types';
 import { socket, connectSocket, disconnectSocket } from './services/socket';
 import { Search, PhoneCall, Hand } from 'lucide-react';
 
@@ -24,7 +27,10 @@ export function App() {
 
   const [activeMonitorCabin, setActiveMonitorCabin] = useState<Cabin | null>(null);
   const [broadcastOpen, setBroadcastOpen] = useState(false);
-  const [practiceOpen, setPracticeOpen] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(false);
+  const [submissionsOpen, setSubmissionsOpen] = useState(false);
+  const [pendingSubmissions, setPendingSubmissions] = useState(0);
+  const [submissionToast, setSubmissionToast] = useState<StudentRecording | null>(null);
   const [recordingsOpen, setRecordingsOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
@@ -78,6 +84,27 @@ export function App() {
   };
 
   useEffect(() => { if (user) loadLabData(); /* eslint-disable-next-line */ }, [user]);
+
+  // Pending student submissions (badge on the professor's navbar)
+  const refreshPending = async () => {
+    if (!user || user.role === 'STUDENT') return;
+    try { setPendingSubmissions((await listSubmissions('PENDING')).length); } catch { /* noop */ }
+  };
+  useEffect(() => {
+    if (!user || user.role === 'STUDENT') return;
+    void refreshPending();
+    const onNew = (d: { recording: StudentRecording }) => {
+      setPendingSubmissions((n) => n + 1);
+      setSubmissionToast(d.recording);
+      playChime();
+      window.setTimeout(() => setSubmissionToast((cur) => (cur?.id === d.recording.id ? null : cur)), 8000);
+    };
+    const onRemoved = () => { void refreshPending(); };
+    socket.on('submission:new', onNew);
+    socket.on('submission:removed', onRemoved);
+    return () => { socket.off('submission:new', onNew); socket.off('submission:removed', onRemoved); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user]);
 
   const playChime = () => {
     try {
@@ -276,7 +303,9 @@ export function App() {
       <Navbar
         user={user} onLogout={handleLogout}
         onOpenBroadcast={user.role === 'PROFESSOR' ? () => setBroadcastOpen(true) : undefined}
-        onOpenPractice={user.role !== 'STUDENT' ? () => setPracticeOpen(true) : undefined}
+        onOpenMedia={user.role !== 'STUDENT' ? () => setMediaOpen(true) : undefined}
+        onOpenSubmissions={user.role !== 'STUDENT' ? () => { setSubmissionsOpen(true); setSubmissionToast(null); } : undefined}
+        pendingSubmissions={pendingSubmissions}
         onOpenRecordings={() => setRecordingsOpen(true)}
         onOpenAdmin={user.role !== 'STUDENT' ? () => setAdminOpen(true) : undefined}
         recordingsCount={recordings.length}
@@ -312,6 +341,17 @@ export function App() {
           onReject={rejectIncoming}
           language={language}
         />
+      )}
+
+      {submissionToast && !submissionsOpen && (
+        <button onClick={() => { setSubmissionsOpen(true); setSubmissionToast(null); }}
+          className="fixed top-5 right-5 z-[70] w-80 text-left glass-panel-elevated border border-cyan-400/70 shadow-[0_0_30px_rgba(34,211,238,0.3)] rounded-2xl p-4 hover:border-cyan-300 transition-all">
+          <div className="text-[11px] font-bold text-cyan-300 uppercase tracking-wide">{t(language, 'newSubmission')}</div>
+          <div className="text-sm font-bold text-white mt-1 truncate">
+            {submissionToast.cabinNumber ? `${t(language, 'cabin')} ${String(submissionToast.cabinNumber).padStart(2, '0')} · ` : ''}{submissionToast.learner?.name}
+          </div>
+          <div className="text-[11px] text-slate-400 truncate">{t(language, 'rollNo')} {submissionToast.learner?.rollNo} · {submissionToast.title}</div>
+        </button>
       )}
 
       {callNotice && (
@@ -371,7 +411,8 @@ export function App() {
       )}
 
       {broadcastOpen && <BroadcastStudioModal currentUser={user || undefined} onClose={() => setBroadcastOpen(false)} language={language} />}
-      {practiceOpen && <PracticeMediaModal cabins={cabins} onClose={() => setPracticeOpen(false)} language={language} />}
+      {mediaOpen && <MediaLibraryModal cabins={cabins} onClose={() => setMediaOpen(false)} language={language} />}
+      {submissionsOpen && <SubmissionsModal onClose={() => { setSubmissionsOpen(false); void refreshPending(); }} language={language} />}
       {/* key: a new call always gets a fresh CallModal (new media + peer) */}
       {activeCall && user && <CallModal key={activeCall.roomId} call={activeCall} currentUser={user} onEndCall={() => setActiveCall(null)} language={language} />}
       {recordingsOpen && <RecordingsModal recordings={recordings} onClose={() => setRecordingsOpen(false)} onRefresh={loadLabData} language={language} />}

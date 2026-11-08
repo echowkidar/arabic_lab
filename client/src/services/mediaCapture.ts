@@ -33,6 +33,33 @@ export async function getScreenStream(withSystemAudio = true): Promise<MediaStre
   });
 }
 
+// Desktop app (EXE): capture the whole screen with no picker. Uses the
+// main-process display-media handler first; if that fails, falls back to a
+// desktopCapturer screen source via getUserMedia. In a plain browser the
+// browser always shows its own picker (that can't be bypassed), so callers
+// should only use this when isElectron() is true.
+export async function getAutoScreenStream(withSystemAudio = true): Promise<MediaStream> {
+  try {
+    return await getScreenStream(withSystemAudio);
+  } catch { /* fall through to desktopCapturer */ }
+  const api = (window as any).electronAPI;
+  if (!api?.getDesktopSources) throw new Error('SCREEN_CAPTURE_UNSUPPORTED');
+  const sources = await api.getDesktopSources({ types: ['screen'] });
+  const id = sources?.[0]?.id;
+  if (!id) throw new Error('NO_SCREEN_SOURCE');
+  const video = { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: id, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 15 } };
+  if (withSystemAudio) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: { mandatory: { chromeMediaSource: 'desktop' } }, video } as any);
+    } catch { /* no loopback audio on this PC - video only */ }
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: false, video } as any);
+}
+
+export function isLiveStream(stream?: MediaStream | null): boolean {
+  return Boolean(stream && stream.getVideoTracks().some((t) => t.readyState === 'live'));
+}
+
 export async function enumerate(kind: MediaDeviceKind): Promise<MediaDeviceInfo[]> {
   if (!navigator.mediaDevices?.enumerateDevices) return [];
   const list = await navigator.mediaDevices.enumerateDevices();

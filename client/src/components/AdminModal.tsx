@@ -1,7 +1,82 @@
 import React, { useState, useEffect } from 'react';
 import { User, MonitoringLog, Language } from '../types';
 import { X, Users, KeyRound, Power, ShieldAlert, Check, RefreshCw, Eye, Volume2, Camera, Download, Monitor, Laptop, Sparkles } from 'lucide-react';
-import { fetchUsers, resetPassword, toggleUserActive, fetchAuditLogs, SERVER_URL } from '../services/api';
+import { fetchUsers, resetPassword, toggleUserActive, fetchAuditLogs, SERVER_URL, listLearners, resetLearnerPin } from '../services/api';
+import { t } from '../i18n';
+import { formatDateTime } from '../services/recorder';
+
+// Roll No + PIN student profiles (used for voice recordings on shared cabins).
+const LearnersPanel: React.FC<{ language: Language }> = ({ language }) => {
+  const [rows, setRows] = useState<Awaited<ReturnType<typeof listLearners>>>([]);
+  const [query, setQuery] = useState('');
+  const [resetFor, setResetFor] = useState<string | null>(null);
+  const [pin, setPin] = useState('');
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => { listLearners().then(setRows).catch((e) => setErr(e.message)); }, []);
+
+  const doReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetFor) return;
+    try {
+      await resetLearnerPin(resetFor, pin);
+      setMsg(t(language, 'pinReset'));
+      setResetFor(null); setPin('');
+      setTimeout(() => setMsg(null), 3000);
+    } catch (e: any) { setErr(e.message); }
+  };
+
+  const q = query.trim().toLowerCase();
+  const visible = rows.filter((r) => !q || r.name.toLowerCase().includes(q) || r.rollNo.toLowerCase().includes(q));
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t(language, 'searchStudent')}
+          className="bg-slate-900 border border-emerald-900/60 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-400 w-64" />
+        {msg && <span className="text-xs text-emerald-300 flex items-center gap-1"><Check className="w-4 h-4" />{msg}</span>}
+      </div>
+      {err && <div className="text-xs text-red-300 bg-red-950/50 border border-red-500/40 rounded-lg px-3 py-2">{err}</div>}
+      <table className="w-full text-left text-xs">
+        <thead>
+          <tr className="border-b border-emerald-900/50 text-slate-400">
+            <th className="pb-3 px-3">{t(language, 'rollNo')}</th>
+            <th className="pb-3 px-3">{t(language, 'fullName')}</th>
+            <th className="pb-3 px-3">{t(language, 'myRecordings')}</th>
+            <th className="pb-3 px-3">{t(language, 'date')}</th>
+            <th className="pb-3 px-3 text-right" />
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-emerald-900/30">
+          {visible.length === 0 && <tr><td colSpan={5} className="py-8 text-center text-slate-500">—</td></tr>}
+          {visible.map((r) => (
+            <tr key={r.id} className="hover:bg-emerald-950/30">
+              <td className="py-2.5 px-3 font-mono font-bold text-emerald-400">{r.rollNo}</td>
+              <td className="py-2.5 px-3 font-semibold text-slate-200">{r.name}</td>
+              <td className="py-2.5 px-3 text-slate-300">{r._count.recordings}</td>
+              <td className="py-2.5 px-3 font-mono text-slate-400">{formatDateTime(r.createdAt).date}</td>
+              <td className="py-2.5 px-3 text-right">
+                {resetFor === r.id ? (
+                  <form onSubmit={doReset} className="inline-flex items-center gap-2">
+                    <input value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 6))} required minLength={4} maxLength={6} inputMode="numeric"
+                      placeholder="New PIN" className="w-24 bg-slate-900 border border-amber-500/50 rounded-lg px-2 py-1 text-xs text-white font-mono tracking-widest focus:outline-none" autoFocus />
+                    <button type="submit" className="btn-gold text-[11px] py-1 px-2.5">{t(language, 'save')}</button>
+                    <button type="button" onClick={() => { setResetFor(null); setPin(''); }} className="text-slate-400 hover:text-white">{t(language, 'cancel')}</button>
+                  </form>
+                ) : (
+                  <button onClick={() => { setResetFor(r.id); setPin(''); }} className="btn-outline text-[11px] py-1 px-2.5">
+                    <KeyRound className="w-3.5 h-3.5 text-yellow-400" /><span>{t(language, 'resetPin')}</span>
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
 
 interface AdminModalProps {
   onClose: () => void;
@@ -10,7 +85,7 @@ interface AdminModalProps {
 
 export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => {
   const isArabic = language === 'ar';
-  const [activeTab, setActiveTab] = useState<'users' | 'audit' | 'deployment'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'learners' | 'audit' | 'deployment'>('users');
   const [users, setUsers] = useState<User[]>([]);
   const [auditLogs, setAuditLogs] = useState<MonitoringLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,6 +174,16 @@ export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => 
               }`}
             >
               {isArabic ? 'حسابات الكبائن (25 طالباً)' : 'Student Cabins (25 Accounts)'}
+            </button>
+            <button
+              onClick={() => setActiveTab('learners')}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition-all ${
+                activeTab === 'learners'
+                  ? 'bg-emerald-600 text-white shadow'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              {t(language, 'students')} ({t(language, 'rollNo')} + PIN)
             </button>
             <button
               onClick={() => setActiveTab('audit')}
@@ -239,7 +324,9 @@ export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => 
                 </table>
               </div>
             </div>
-          ) : (
+          ) : activeTab === 'learners' ? (
+            <LearnersPanel language={language} />
+          ) : activeTab === 'audit' ? (
             /* Audit Log View */
             <div className="flex flex-col gap-3">
               <div className="bg-emerald-950/30 border border-emerald-900/50 p-3 rounded-lg flex items-center gap-3 text-xs text-slate-300">
@@ -295,7 +382,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({ onClose, language }) => 
                 </table>
               </div>
             </div>
-          )}
+          ) : null}
 
           {/* Deployment Tab */}
           {activeTab === 'deployment' && (

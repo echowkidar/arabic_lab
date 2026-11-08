@@ -1,16 +1,16 @@
 {
-  "version": "1.5.3",
-  "releaseDate": "2026-11-09",
+  "version": "1.6.0",
+  "releaseDate": "2026-11-08",
   "name": "Arabic Language Lab Suite",
   "mandatory": false,
   "downloadUrl": "/api/download/setup",
   "changelog": [
-    "Fixed calls getting stuck on 'Connecting...' forever when camera/mic permission fails on either side",
-    "Call connection now always starts, even with no camera/mic access",
-    "Reliable 1:1 calls: both sides' camera/mic always connect, clean hang-up on disconnect, no endless ringing",
-    "Screen sharing now works in audio-only calls too",
-    "Broadcast: screen and webcam PiP no longer overwrite each other; late-joining cabins receive the live broadcast",
-    "Silent monitor: screen vs. webcam always shown in the right place",
-    "Quick login presets for Cabin 01-04 (4-cabin testing)"
+    "Student Voice Recorder with date, time and duration; recordings protected by Roll No + PIN",
+    "Submit recordings to the professor with live notification",
+    "Professor grading: marks, remarks, lock/unlock (graded work can't be deleted)",
+    "Media Library: upload or record audio/video and share with all or selected cabins",
+    "Student Lab Materials player: play / pause / stop / next / repeat / continuous play / speed, audio and video",
+    "Student desktop visible to the professor by default in monitoring and calls (desktop app)",
+    "Calls connect even when camera/mic permission fails"
   ]
 }

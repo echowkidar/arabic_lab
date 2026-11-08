@@ -74,6 +74,62 @@ export interface MonitoringLog {
   startedAt: string;
 }
 
+export interface Learner {
+  id: string;
+  rollNo: string;
+  name: string;
+}
+
+export type StudentRecordingStatus = 'DRAFT' | 'SUBMITTED' | 'GRADED';
+
+export interface StudentRecording {
+  id: string;
+  learnerId: string;
+  learner?: Learner;
+  cabinNumber?: number | null;
+  title: string;
+  mimeType: string;
+  durationSec: number;
+  sizeBytes: number;
+  recordedAt: string;
+  status: StudentRecordingStatus;
+  submittedAt?: string | null;
+  marks?: number | null;
+  maxMarks: number;
+  remark?: string | null;
+  gradedAt?: string | null;
+  locked: boolean;
+}
+
+export interface MediaItem {
+  id: string;
+  title: string;
+  mimeType: string;
+  kind: 'AUDIO' | 'VIDEO';
+  source: 'UPLOAD' | 'PROF_RECORDING';
+  durationSec: number;
+  sizeBytes: number;
+  createdAt: string;
+  _count?: { shares: number };
+}
+
+export interface MediaShare {
+  id: string;
+  mediaId: string;
+  targetType: 'ALL' | 'CABINS';
+  cabins: number[];
+  mode: 'student' | 'synced';
+  createdAt: string;
+  media: MediaItem;
+}
+
+export interface SharedMaterial {
+  shareId: string;
+  mode: 'student' | 'synced';
+  sharedAt: string;
+  media: MediaItem;
+}
+
 export interface ActiveCall {
   roomId: string;
   peerSocketId: string;

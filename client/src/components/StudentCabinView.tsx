@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { User, Language } from '../types';
-import { Hand, Phone, Video, Mic, BookOpen, Users, ShieldCheck, Camera, CameraOff } from 'lucide-react';
+import { User, Language, StudentRecording } from '../types';
+import { Hand, Phone, Video, Mic, BookOpen, Users, ShieldCheck, Camera, CameraOff, Bell } from 'lucide-react';
 import { socket } from '../services/socket';
 import { AudioAnalyzer } from '../services/audioAnalyzer';
 import { BroadcastViewerModal } from './BroadcastViewerModal';
-import { PracticePlayer } from './PracticePlayer';
-import { getMicStream, getWebcamStream, getScreenStream, mixAudioTracks, stopStream, isElectron, MixedAudio } from '../services/mediaCapture';
+import { VoiceRecorder } from './student/VoiceRecorder';
+import { MyRecordings } from './student/MyRecordings';
+import { MaterialsPlayer } from './student/MaterialsPlayer';
+import { lockLearner } from '../services/learnerSession';
+import { t } from '../i18n';
+import { getMicStream, getWebcamStream, getScreenStream, getAutoScreenStream, isLiveStream, mixAudioTracks, stopStream, isElectron, MixedAudio } from '../services/mediaCapture';
 import { createPeer, closePeer, addMediaTrack, sendMeta } from '../services/rtcEngine';
 
 interface StudentCabinViewProps {
@@ -28,7 +32,10 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
   const [hardwareError, setHardwareError] = useState<string | null>(null);
 
   const [broadcast, setBroadcast] = useState<{ professorSocketId: string; title: string } | null>(null);
-  const [practice, setPractice] = useState<{ url: string; name: string; mode: 'student' | 'synced' } | null>(null);
+  const [recordingsVersion, setRecordingsVersion] = useState(0);
+  const [browserScreenOn, setBrowserScreenOn] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
 
   const micStreamRef = useRef<MediaStream | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
@@ -106,13 +113,16 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
   // 3) Live A/V publish to a professor when monitoring starts
   useEffect(() => {
     const ensureScreen = async (): Promise<MediaStream | null> => {
-      if (screenStreamRef.current) return screenStreamRef.current;
+      if (isLiveStream(screenStreamRef.current)) return screenStreamRef.current;
+      // Browser/kiosk: the browser requires the student to pick the screen
+      // (see the "Share screen with professor" button) - no silent capture.
+      if (!isElectron()) return null;
       try {
-        const scr = await getScreenStream(true); // screen video + system/desktop audio
+        const scr = await getAutoScreenStream(true); // whole screen + desktop audio, no picker
         screenStreamRef.current = scr;
         return scr;
       } catch {
-        return null; // kiosk/browser without silent capture -> publish mic+cam only
+        return null; // publish mic + webcam only
       }
     };
 
@@ -165,8 +175,12 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
       closePeer(data.sessionId);
       watchersRef.current.delete(data.sessionId);
       if (watchersRef.current.size === 0) {
-        stopStream(screenStreamRef.current);
-        screenStreamRef.current = null;
+        // The EXE can re-capture silently next time; in a browser keep the
+        // stream the student chose so monitoring keeps working.
+        if (isElectron()) {
+          stopStream(screenStreamRef.current);
+          screenStreamRef.current = null;
+        }
         mixedRef.current?.stop();
         mixedRef.current = null;
       }
@@ -177,23 +191,45 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
     return () => { socket.off('monitor:start', onMonitorStart); socket.off('monitor:stop', onMonitorStop); };
   }, []);
 
-  // 4) Broadcast + practice media events
+  // 4) Broadcast events + grade notifications
   useEffect(() => {
     const onBroadcast = (data: { professorSocketId: string; title: string }) => setBroadcast(data);
     const onBroadcastEnd = () => setBroadcast(null);
-    const onMediaPush = (data: { url: string; name: string; mode: 'student' | 'synced' }) => setPractice(data);
-    const onMediaClear = () => setPractice(null);
+    const onRecUpdated = (d: { recording: StudentRecording }) => {
+      if (d?.recording?.status === 'GRADED') {
+        showToast(`${t(language, 'gradeArrived')}: ${d.recording.marks}/${d.recording.maxMarks}`);
+      }
+    };
     socket.on('broadcast:incoming', onBroadcast);
     socket.on('broadcast:ended', onBroadcastEnd);
-    socket.on('media:push', onMediaPush);
-    socket.on('media:clear', onMediaClear);
+    socket.on('recording:updated', onRecUpdated);
     return () => {
       socket.off('broadcast:incoming', onBroadcast);
       socket.off('broadcast:ended', onBroadcastEnd);
-      socket.off('media:push', onMediaPush);
-      socket.off('media:clear', onMediaClear);
+      socket.off('recording:updated', onRecUpdated);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [language]);
+
+  // Never leave a student's recordings unlocked for the next person.
+  useEffect(() => () => lockLearner(), []);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 5000);
+  };
+
+  // Browser/kiosk only: the browser needs one click + a screen pick.
+  const shareScreenInBrowser = async () => {
+    try {
+      const scr = await getScreenStream(true);
+      stopStream(screenStreamRef.current);
+      screenStreamRef.current = scr;
+      setBrowserScreenOn(true);
+      scr.getVideoTracks()[0]?.addEventListener('ended', () => setBrowserScreenOn(false));
+    } catch { /* student cancelled the picker */ }
+  };
 
   const toggleHand = () => {
     if (!handRaised) { setHandRaised(true); socket.emit('raise-hand', { studentName: user.name }); }
@@ -236,8 +272,10 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
         </div>
       )}
 
-      {practice && (
-        <PracticePlayer url={practice.url} name={practice.name} mode={practice.mode} language={language} onClose={() => setPractice(null)} />
+      {toast && (
+        <div className="fixed top-5 right-5 z-[70] max-w-sm px-4 py-3 rounded-xl bg-slate-900/95 border border-amber-500/60 shadow-xl text-sm text-amber-100 flex items-center gap-2" role="status">
+          <Bell className="w-4 h-4 text-amber-400 shrink-0" />{toast}
+        </div>
       )}
 
       <div className="glass-panel-elevated p-6 flex flex-wrap items-center justify-between gap-4 border-emerald-500/30">
@@ -270,7 +308,10 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-8 space-y-6">
+        <div className="lg:col-span-7 space-y-6">
+          <VoiceRecorder language={language} onSaved={() => setRecordingsVersion((v) => v + 1)} />
+          <MyRecordings language={language} refreshKey={recordingsVersion} />
+
           <div className="glass-panel p-6">
             <div className="flex items-center justify-between border-b border-emerald-900/50 pb-4 mb-5">
               <div className="flex items-center gap-2">
@@ -290,7 +331,7 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
               <div className="p-5 rounded-xl bg-emerald-950/40 border border-emerald-500/20 text-right">
                 <span className="text-[11px] font-bold text-amber-400 bg-amber-950/60 px-2 py-0.5 rounded mb-3 inline-block font-sans">تمرين مخارج الحروف</span>
                 <p className="text-2xl font-quran leading-relaxed text-emerald-100 my-2">« وَلَا الضَّالِّينَ • قُلْ أَعُوذُ بِرَبِّ الفَلَقِ »</p>
-                <p className="text-xs text-slate-400 mt-2 font-sans text-left"><strong>Instructions:</strong> Read aloud into your headset. When the professor sends a practice audio, it appears above with play / pause / repeat controls.</p>
+                <p className="text-xs text-slate-400 mt-2 font-sans text-left"><strong>Instructions:</strong> Read aloud and record yourself with the Voice Recorder above. Audio/video from the professor appears in Lab Materials.</p>
               </div>
             )}
             {activeExerciseTab === 'dialogue' && (
@@ -339,10 +380,24 @@ export const StudentCabinView: React.FC<StudentCabinViewProps> = ({ user, onStar
               </div>
               <p className="text-[11px] text-slate-400">Your mic, webcam and desktop (with sound) are available to the professor for supervised teaching, per the lab Acceptable Use Policy you accepted at login.</p>
             </div>
+            {!isElectron() && (
+              <div className="flex items-center justify-between gap-3 pt-2 border-t border-emerald-900/40">
+                <span className={`text-[11px] font-semibold ${browserScreenOn ? 'text-emerald-300' : 'text-amber-300'}`}>
+                  {browserScreenOn ? `✓ ${t(language, 'screenSharedWithProf')}` : t(language, 'shareScreenWithProf')}
+                </span>
+                {!browserScreenOn && (
+                  <button onClick={shareScreenInBrowser} className="btn-gold text-[11px] py-1.5 px-3">
+                    <Camera className="w-3.5 h-3.5 text-black" /><span>{t(language, 'shareScreenWithProf')}</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        <div className="lg:col-span-4 space-y-6">
+        <div className="lg:col-span-5 space-y-6">
+          <MaterialsPlayer language={language} onNewMaterial={() => showToast(t(language, 'newMaterial'))} />
+
           <div className="glass-panel p-5 border-emerald-500/20">
             <div className="flex items-center gap-2 mb-3"><Users className="w-4 h-4 text-emerald-400" /><h3 className="text-sm font-bold text-white font-arabic">{isArabic ? 'محادثة مع كابينة أخرى' : 'Peer Dialogue Practice'}</h3></div>
             <p className="text-xs text-slate-400 mb-4">Connect 1:1 with another cabin to practice Arabic dialogue over LAN.</p>

@@ -1,4 +1,5 @@
-import { User, Cabin, Recording, MonitoringLog } from '../types';
+import { User, Cabin, Recording, MonitoringLog, Learner, StudentRecording, MediaItem, MediaShare, SharedMaterial } from '../types';
+import { getLearnerSession, lockLearner } from './learnerSession';
 
 export const SERVER_URL =
   import.meta.env.VITE_SERVER_URL ||
@@ -135,43 +136,90 @@ export async function logAudit(cabinNumber: number, action: 'SCREEN_VIEW' | 'AUD
 }
 
 
-// ---- Practice Media (professor pushes audio/video drills to students) ----
-export interface PracticeMedia {
-  url: string;
-  name: string;
-  sizeBytes?: number;
-  createdAt?: string;
-}
-
-export async function uploadPracticeMedia(formData: FormData): Promise<PracticeMedia> {
+// ---- Shared request helper for the newer endpoints ----
+// Throws an Error whose message is the server's user-friendly `error` text,
+// with `.code` (e.g. PIN_REQUIRED / PIN_EXPIRED) and `.status` attached.
+async function request<T>(path: string, init: RequestInit & { learner?: boolean; json?: unknown } = {}): Promise<T> {
   const token = localStorage.getItem('arabic_lab_token');
-  const res = await fetch(`${API_BASE}/media/upload`, {
-    method: 'POST',
-    headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-    body: formData,
-  });
-  if (!res.ok) throw new Error('Failed to upload media');
-  return res.json();
+  const headers: Record<string, string> = { ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  if (init.learner) {
+    const s = getLearnerSession();
+    if (s) headers['X-Learner-Token'] = s.token;
+  }
+  let body = init.body;
+  if (init.json !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    body = JSON.stringify(init.json);
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers: { ...headers, ...(init.headers as any) }, body });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err: any = new Error(data.message || data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.code = data.error;
+    if (res.status === 401 && init.learner && (data.error === 'PIN_EXPIRED' || data.error === 'PIN_REQUIRED')) lockLearner();
+    throw err;
+  }
+  return data as T;
 }
 
-export async function listPracticeMedia(): Promise<PracticeMedia[]> {
-  const res = await fetch(`${API_BASE}/media`, { headers: getAuthHeader() });
-  if (!res.ok) throw new Error('Failed to list media');
-  const data = await res.json();
-  return data.media;
-}
+// ---- Learner (Roll No + PIN) ----
+export const registerLearner = (rollNo: string, name: string, pin: string) =>
+  request<{ learner: Learner; learnerToken: string }>('/learners/register', { method: 'POST', json: { rollNo, name, pin } });
+export const unlockLearner = (rollNo: string, pin: string) =>
+  request<{ learner: Learner; learnerToken: string }>('/learners/unlock', { method: 'POST', json: { rollNo, pin } });
+export const listLearners = () =>
+  request<{ learners: (Learner & { createdAt: string; lockedUntil?: string | null; _count: { recordings: number } })[] }>('/learners').then((d) => d.learners);
+export const resetLearnerPin = (id: string, pin: string) =>
+  request<{ success: boolean }>(`/learners/${id}/reset-pin`, { method: 'POST', json: { pin } });
 
-export async function deletePracticeMedia(file: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/media?file=${encodeURIComponent(file)}`, {
-    method: 'DELETE',
-    headers: getAuthHeader(),
-  });
-  if (!res.ok) throw new Error('Failed to delete media');
+// ---- Student voice recordings ----
+export function uploadStudentRecording(blob: Blob, title: string, durationSec: number) {
+  const fd = new FormData();
+  const ext = blob.type.includes('ogg') ? 'ogg' : 'webm';
+  fd.append('audio', blob, `voice-${Date.now()}.${ext}`);
+  fd.append('title', title);
+  fd.append('durationSec', String(durationSec));
+  return request<{ recording: StudentRecording }>('/student-recordings', { method: 'POST', body: fd, learner: true }).then((d) => d.recording);
 }
+export const listMyRecordings = () =>
+  request<{ recordings: StudentRecording[] }>('/student-recordings/mine', { learner: true }).then((d) => d.recordings);
+export const submitRecording = (id: string) =>
+  request<{ recording: StudentRecording }>(`/student-recordings/${id}/submit`, { method: 'POST', learner: true }).then((d) => d.recording);
+export const deleteMyRecording = (id: string) =>
+  request<{ success: boolean }>(`/student-recordings/mine/${id}`, { method: 'DELETE', learner: true });
 
-// Resolve a server-relative media URL to an absolute URL the student can fetch.
-export function mediaUrl(url: string): string {
-  if (!url) return url;
-  if (/^https?:\/\//i.test(url)) return url;
-  return `${SERVER_URL}${url}`;
+export const listSubmissions = (status: 'PENDING' | 'GRADED' | 'ALL') =>
+  request<{ recordings: StudentRecording[] }>(`/student-recordings?status=${status}`).then((d) => d.recordings);
+export const gradeRecording = (id: string, marks: number, maxMarks: number, remark: string) =>
+  request<{ recording: StudentRecording }>(`/student-recordings/${id}/grade`, { method: 'PATCH', json: { marks, maxMarks, remark } }).then((d) => d.recording);
+export const setRecordingLock = (id: string, locked: boolean) =>
+  request<{ recording: StudentRecording }>(`/student-recordings/${id}/lock`, { method: 'PATCH', json: { locked } }).then((d) => d.recording);
+export const deleteSubmission = (id: string) =>
+  request<{ success: boolean }>(`/student-recordings/${id}`, { method: 'DELETE' });
+
+// ---- Media library & sharing ----
+export function uploadMediaItem(file: Blob, opts: { title?: string; durationSec?: number; source?: 'UPLOAD' | 'PROF_RECORDING'; filename?: string } = {}) {
+  const fd = new FormData();
+  fd.append('media', file, opts.filename || (file as File).name || `recording-${Date.now()}.webm`);
+  if (opts.title) fd.append('title', opts.title);
+  if (opts.durationSec) fd.append('durationSec', String(opts.durationSec));
+  if (opts.source) fd.append('source', opts.source);
+  return request<{ media: MediaItem }>('/media', { method: 'POST', body: fd }).then((d) => d.media);
+}
+export const listMediaItems = () => request<{ media: MediaItem[] }>('/media').then((d) => d.media);
+export const renameMediaItem = (id: string, title: string) =>
+  request<{ media: MediaItem }>(`/media/${id}`, { method: 'PATCH', json: { title } }).then((d) => d.media);
+export const deleteMediaItem = (id: string) => request<{ success: boolean }>(`/media/${id}`, { method: 'DELETE' });
+
+export const shareMediaItems = (mediaIds: string[], targetType: 'ALL' | 'CABINS', cabins: number[], mode: 'student' | 'synced') =>
+  request<{ shares: unknown[] }>('/media-shares', { method: 'POST', json: { mediaIds, targetType, cabins, mode } });
+export const listMediaShares = () => request<{ shares: MediaShare[] }>('/media-shares').then((d) => d.shares);
+export const revokeMediaShare = (id: string) => request<{ success: boolean }>(`/media-shares/${id}`, { method: 'DELETE' });
+export const listMySharedMedia = () => request<{ items: SharedMaterial[] }>('/media-shares/mine').then((d) => d.items);
+
+// ---- Signed playback URLs (audio/video elements can't send auth headers) ----
+export async function getPlaybackUrl(type: 'student' | 'media', id: string): Promise<string> {
+  const d = await request<{ url: string }>(`/files/sign?type=${type}&id=${encodeURIComponent(id)}`, { learner: type === 'student' });
+  return `${SERVER_URL}${d.url}`;
 }

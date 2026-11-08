@@ -16,6 +16,10 @@ import * as userController from './controllers/user.controller.js';
 import * as recordingController from './controllers/recording.controller.js';
 import * as auditController from './controllers/audit.controller.js';
 import * as mediaController from './controllers/media.controller.js';
+import * as learnerController from './controllers/learner.controller.js';
+import * as studentRecController from './controllers/studentRecording.controller.js';
+import * as streamController from './controllers/stream.controller.js';
+import { setRealtime } from './realtime.js';
 
 const app = express();
 const server = http.createServer(app);
@@ -37,6 +41,7 @@ const io = new SocketIOServer(server, {
 });
 
 setupSocketServer(io);
+setRealtime(io);
 
 // Express Middleware
 app.use(cors({ origin: '*' }));
@@ -51,8 +56,8 @@ app.use('/uploads/recordings', express.static(uploadDir));
 const downloadsDir = path.resolve(process.cwd(), './downloads');
 app.use('/downloads', express.static(downloadsDir));
 
-const mediaDir = path.resolve(process.cwd(), process.env.MEDIA_DIR || './uploads/media');
-app.use('/uploads/media', express.static(mediaDir));
+// Practice media and student voice recordings are NOT served statically:
+// they go through the signed /api/files/stream route (see stream.controller).
 
 // Health Check
 app.get('/api/health', (_req, res) => {
@@ -137,9 +142,9 @@ app.get('/api/app/version', (_req, res) => {
   // Fallback: hardcoded version if version.json is missing
   console.warn('[AutoUpdate] version.json not found, serving hardcoded fallback.');
   res.json({
-    version: '1.5.3',
+    version: '1.6.0',
     downloadUrl: '/api/download/setup',
-    releaseDate: '2026-11-09',
+    releaseDate: '2026-11-08',
     name: 'Arabic Language Lab Suite',
     mandatory: false,
   });
@@ -305,10 +310,38 @@ app.delete('/api/recordings/:id', authenticateToken, requireRole('PROFESSOR', 'A
 app.get('/api/audit', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), auditController.listAuditLogs);
 app.post('/api/audit/log', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), auditController.createAuditLog);
 
-// --- PRACTICE MEDIA ROUTES (Professor pushes audio/video drills to students) ---
-app.post('/api/media/upload', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), mediaController.uploadMediaMiddleware, mediaController.uploadMedia);
-app.get('/api/media', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), mediaController.listMedia);
-app.delete('/api/media', authenticateToken, requireRole('PROFESSOR', 'ADMIN'), mediaController.deleteMedia);
+const staff = [authenticateToken, requireRole('PROFESSOR', 'ADMIN')];
+const student = [authenticateToken, requireRole('STUDENT')];
+
+// --- LEARNER PROFILES (Roll No + PIN; independent of the shared cabin login) ---
+app.post('/api/learners/register', ...student, learnerController.register);
+app.post('/api/learners/unlock', ...student, learnerController.unlock);
+app.get('/api/learners', ...staff, learnerController.listLearners);
+app.post('/api/learners/:id/reset-pin', ...staff, learnerController.resetPin);
+
+// --- STUDENT VOICE RECORDINGS ---
+app.post('/api/student-recordings', ...student, learnerController.requireLearner, studentRecController.uploadStudentAudio, studentRecController.create);
+app.get('/api/student-recordings/mine', ...student, learnerController.requireLearner, studentRecController.listMine);
+app.post('/api/student-recordings/:id/submit', ...student, learnerController.requireLearner, studentRecController.submit);
+app.delete('/api/student-recordings/mine/:id', ...student, learnerController.requireLearner, studentRecController.removeMine);
+app.get('/api/student-recordings', ...staff, studentRecController.listAll);
+app.patch('/api/student-recordings/:id/grade', ...staff, studentRecController.grade);
+app.patch('/api/student-recordings/:id/lock', ...staff, studentRecController.setLock);
+app.delete('/api/student-recordings/:id', ...staff, studentRecController.removeAny);
+
+// --- MEDIA LIBRARY & SHARING (professor -> all / selected cabins) ---
+app.post('/api/media', ...staff, mediaController.uploadMediaMiddleware, mediaController.uploadMedia);
+app.get('/api/media', ...staff, mediaController.listMedia);
+app.patch('/api/media/:id', ...staff, mediaController.renameMedia);
+app.delete('/api/media/:id', ...staff, mediaController.deleteMedia);
+app.post('/api/media-shares', ...staff, mediaController.shareMedia);
+app.get('/api/media-shares', ...staff, mediaController.listShares);
+app.delete('/api/media-shares/:id', ...staff, mediaController.revokeShare);
+app.get('/api/media-shares/mine', ...student, mediaController.mySharedMedia);
+
+// --- SIGNED FILE STREAMING (audio/video players) ---
+app.get('/api/files/sign', authenticateToken, streamController.signFile);
+app.get('/api/files/stream/:type/:id', streamController.streamFile);
 
 server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`

@@ -66,6 +66,71 @@ model Recording {
   createdAt     DateTime  @default(now())
 }
 
+// A student identity that is independent of the shared cabin login:
+// the same Roll No + PIN works from any cabin, on any day.
+model Learner {
+  id              String             @id @default(uuid())
+  rollNo          String             @unique
+  name            String
+  pinHash         String
+  failedAttempts  Int                @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime           @default(now())
+
+  recordings      StudentRecording[]
+}
+
+// A student's own voice recording (pronunciation practice).
+model StudentRecording {
+  id           String    @id @default(uuid())
+  learnerId    String
+  learner      Learner   @relation(fields: [learnerId], references: [id], onDelete: Cascade)
+  cabinNumber  Int?
+  title        String
+  filePath     String    // absolute path on disk, never served statically
+  mimeType     String    @default("audio/webm")
+  durationSec  Int       @default(0)
+  sizeBytes    Int       @default(0)
+  recordedAt   DateTime  @default(now())
+  status       String    @default("DRAFT") // "DRAFT" | "SUBMITTED" | "GRADED"
+  submittedAt  DateTime?
+  marks        Float?
+  maxMarks     Int       @default(10)
+  remark       String?
+  gradedAt     DateTime?
+  gradedById   String?
+  locked       Boolean   @default(false)
+}
+
+// Audio/video the professor uploads or records for the class.
+model MediaItem {
+  id           String       @id @default(uuid())
+  title        String
+  filePath     String       // absolute path on disk
+  mimeType     String
+  kind         String       // "AUDIO" | "VIDEO"
+  source       String       @default("UPLOAD") // "UPLOAD" | "PROF_RECORDING"
+  durationSec  Int          @default(0)
+  sizeBytes    Int          @default(0)
+  createdById  String
+  createdAt    DateTime     @default(now())
+
+  shares       MediaShare[]
+}
+
+// Which cabins can see a MediaItem (persists across reconnects/logins).
+model MediaShare {
+  id           String    @id @default(uuid())
+  mediaId      String
+  media        MediaItem @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  targetType   String    // "ALL" | "CABINS"
+  cabins       String    @default("[]") // JSON array of cabin numbers
+  mode         String    @default("student") // "student" | "synced"
+  active       Boolean   @default(true)
+  createdById  String
+  createdAt    DateTime  @default(now())
+}
+
 model MonitoringLog {
   id            String    @id @default(uuid())
   professorId   String

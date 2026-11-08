@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ActiveCall, User, Language } from '../types';
-import { PhoneOff, Mic, MicOff, Video, VideoOff, Monitor, ShieldCheck } from 'lucide-react';
+import { PhoneOff, Mic, MicOff, Video, VideoOff, Monitor, ShieldCheck, ArrowLeftRight } from 'lucide-react';
 import { socket } from '../services/socket';
-import { createPeer, closePeer, getSender, setOutgoingTrack, sendMeta } from '../services/rtcEngine';
-import { getMicStream, getWebcamStream, getScreenStream, mixAudioTracks, stopStream, MixedAudio } from '../services/mediaCapture';
+import { createPeer, closePeer, getSender, setOutgoingTrack, sendMeta, addMediaTrack, RtcMeta } from '../services/rtcEngine';
+import { getMicStream, getWebcamStream, getScreenStream, getAutoScreenStream, isElectron, mixAudioTracks, stopStream, MixedAudio } from '../services/mediaCapture';
+import { t } from '../i18n';
 
 interface CallModalProps {
   call: ActiveCall;
@@ -23,6 +24,13 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
   const [remoteVideoOn, setRemoteVideoOn] = useState(true);
   const showRemoteVideo = hasRemoteVideo && remoteVideoOn;
+  // Student desktop shown to the professor during a call (second video stream)
+  const [hasRemoteScreen, setHasRemoteScreen] = useState(false);
+  const [screenIsMain, setScreenIsMain] = useState(true);
+  const [sendingAutoScreen, setSendingAutoScreen] = useState(false);
+  const autoScreenRef = useRef<MediaStream | null>(null);
+  const mountedRef = useRef(true);
+  const remoteScreenRef = useRef<HTMLVideoElement | null>(null);
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -81,21 +89,37 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
     peerCreatedRef.current = true;
 
     const composite = localCompositeRef.current;
+    let meta: RtcMeta = {};
+    const inbound = new Map<string, MediaStream>();
+    // Route each inbound stream: the student's desktop (tagged via meta.screen)
+    // goes to the screen view, everything else (camera + voice) to the main view.
+    const route = (stream: MediaStream) => {
+      if (meta.screen && stream.id === meta.screen) {
+        if (remoteScreenRef.current && remoteScreenRef.current.srcObject !== stream) remoteScreenRef.current.srcObject = stream;
+        remoteScreenRef.current?.play().catch(() => {});
+        setHasRemoteScreen(meta.screenOn !== 'off' && stream.getVideoTracks().length > 0);
+        return;
+      }
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
+        remoteVideoRef.current.srcObject = stream;
+      }
+      remoteVideoRef.current?.play().catch(() => {});
+      if (stream.getVideoTracks().length > 0) setHasRemoteVideo(true);
+    };
     createPeer({
       sessionId,
       remoteSocketId: remote,
       purpose: 'call',
       polite: !c.isCaller,
       localStream: composite,
-      onTrack: (stream, track) => {
-        if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
-          remoteVideoRef.current.srcObject = stream;
-        }
-        remoteVideoRef.current?.play().catch(() => {});
-        if (track.kind === 'video') setHasRemoteVideo(true);
-      },
+      onTrack: (stream) => { inbound.set(stream.id, stream); route(stream); },
       // Peer tells us when it has no live video (camera off / screen share ended)
-      onMeta: (meta) => setRemoteVideoOn(meta.video !== 'off'),
+      onMeta: (m) => {
+        meta = m;
+        setRemoteVideoOn(m.video !== 'off');
+        if (m.screenOn === 'off') setHasRemoteScreen(false);
+        inbound.forEach(route);
+      },
       onState: (st) => {
         if (st === 'connected') setStatus('connected');
         else if (st === 'failed' || st === 'disconnected') setStatus('disconnected');
@@ -105,6 +129,31 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
     const micTrack = composite.getAudioTracks()[0];
     videoSenderRef.current = camTrack ? getSender(sessionId, camTrack) : null;
     audioSenderRef.current = micTrack ? getSender(sessionId, micTrack) : null;
+
+    // Student in a call with the professor (desktop app): also send the screen
+    // by default so the professor can see what the student is doing.
+    if (currentUser.role === 'STUDENT' && c.peerRole === 'PROFESSOR' && isElectron()) {
+      void startAutoScreen();
+    }
+  };
+
+  const startAutoScreen = async () => {
+    try {
+      const scr = await getAutoScreenStream(false); // video only; voice stays on the mic track
+      if (!mountedRef.current) { stopStream(scr); return; } // call already ended
+      autoScreenRef.current = scr;
+      const track = scr.getVideoTracks()[0];
+      if (!track) return;
+      sendMeta(sessionId, { screen: scr.id, screenOn: 'on' }); // before the renegotiation offer
+      addMediaTrack(sessionId, track, scr);
+      setSendingAutoScreen(true);
+      track.addEventListener('ended', () => {
+        sendMeta(sessionId, { screenOn: 'off' });
+        setSendingAutoScreen(false);
+      });
+    } catch (e) {
+      console.warn('Auto screen for call unavailable:', e);
+    }
   };
 
   // React to acceptance / peer socket id changes (caller side)
@@ -118,12 +167,15 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
 
   // Cleanup
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       closePeer(sessionId);
       mixedRef.current?.stop();
       stopStream(micStreamRef.current);
       stopStream(camStreamRef.current);
       stopStream(screenStreamRef.current);
+      stopStream(autoScreenRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -205,6 +257,9 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
     onEndCall();
   };
 
+  const mainCls = 'w-full h-full object-contain';
+  const pipCls = 'absolute top-4 left-4 w-56 h-36 rounded-xl border-2 border-cyan-400/70 bg-black object-cover shadow-2xl z-20';
+
   const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
   return (
@@ -236,12 +291,31 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
         </div>
 
         <div className="relative bg-black min-h-[460px] flex items-center justify-center overflow-hidden">
+          {/* Peer camera + voice (stays mounted so audio keeps playing) */}
           <video
             ref={remoteVideoRef}
             autoPlay playsInline
-            className={`w-full h-full object-contain ${showRemoteVideo ? 'block' : 'hidden'}`}
+            className={`${hasRemoteScreen && screenIsMain ? pipCls : mainCls} ${showRemoteVideo ? 'block' : 'hidden'}`}
           />
-          {!showRemoteVideo && (
+          {/* Student desktop (professor side) */}
+          <video
+            ref={remoteScreenRef}
+            autoPlay playsInline muted
+            className={hasRemoteScreen ? (screenIsMain ? mainCls : pipCls) : 'hidden'}
+          />
+          {hasRemoteScreen && (
+            <button onClick={() => setScreenIsMain((v) => !v)}
+              className="absolute top-4 right-4 z-30 btn-outline text-[11px] py-1.5 px-3 bg-black/70 text-cyan-200 border-cyan-400/60">
+              <ArrowLeftRight className="w-3.5 h-3.5" />
+              <span>{screenIsMain ? t(language, 'showCamera') : t(language, 'showScreen')}</span>
+            </button>
+          )}
+          {sendingAutoScreen && (
+            <div className="absolute top-4 left-4 z-30 flex items-center gap-1.5 text-[11px] font-semibold text-cyan-200 bg-black/70 border border-cyan-500/50 px-2.5 py-1 rounded-full">
+              <Monitor className="w-3.5 h-3.5" />{t(language, 'screenSharedWithProf')}
+            </div>
+          )}
+          {(hasRemoteScreen ? !screenIsMain && !showRemoteVideo : !showRemoteVideo) && (
             <div className="w-full h-full flex flex-col items-center justify-center bg-slate-950 p-12 text-center">
               <div className="w-24 h-24 rounded-full bg-emerald-950/80 border-2 border-emerald-400 flex items-center justify-center text-5xl mb-4 animate-pulse">🎙️</div>
               <h3 className="text-xl font-bold text-white">{call.peerName}</h3>
@@ -270,7 +344,8 @@ export const CallModal: React.FC<CallModalProps> = ({ call, currentUser, onEndCa
             className={`w-12 h-12 rounded-full flex items-center justify-center transition-all disabled:opacity-40 ${isVideoOff ? 'bg-red-950/80 text-red-400 border border-red-500/60' : 'bg-emerald-950 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-900'}`}>
             {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
           </button>
-          <button onClick={handleToggleScreenShare} disabled={!isScreenSharing && status !== 'connected'} title="Share screen with desktop audio"
+          <button onClick={handleToggleScreenShare} disabled={(!isScreenSharing && status !== 'connected') || sendingAutoScreen}
+            title={sendingAutoScreen ? t(language, 'screenSharedWithProf') : 'Share screen with desktop audio'}
             className={`w-12 h-12 rounded-full flex items-center justify-center transition-all disabled:opacity-40 ${isScreenSharing ? 'bg-cyan-600 text-white border border-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.6)]' : 'bg-emerald-950 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-900'}`}>
             <Monitor className="w-5 h-5" />
           </button>

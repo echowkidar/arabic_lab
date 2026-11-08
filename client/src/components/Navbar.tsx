@@ -1,13 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { User, Language } from '../types';
-import { Radio, Film, Users, LogOut, Globe, Monitor, Music } from 'lucide-react';
+import { Radio, Film, Users, LogOut, Globe, Monitor, Library, Inbox } from 'lucide-react';
 import { APP_VERSION } from '../constants/version';
+import { t } from '../i18n';
 
 interface NavbarProps {
   user: User;
   onLogout: () => void;
   onOpenBroadcast?: () => void;
-  onOpenPractice?: () => void;
+  onOpenMedia?: () => void;
+  onOpenSubmissions?: () => void;
+  pendingSubmissions?: number;
   onOpenRecordings: () => void;
   onOpenAdmin?: () => void;
   recordingsCount: number;
@@ -16,7 +19,7 @@ interface NavbarProps {
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
-  user, onLogout, onOpenBroadcast, onOpenPractice, onOpenRecordings, onOpenAdmin,
+  user, onLogout, onOpenBroadcast, onOpenMedia, onOpenSubmissions, pendingSubmissions = 0, onOpenRecordings, onOpenAdmin,
   recordingsCount, language, onSelectLanguage,
 }) => {
   const isArabic = language === 'ar';
@@ -60,9 +63,17 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
         )}
 
-        {user.role !== 'STUDENT' && onOpenPractice && (
-          <button onClick={onOpenPractice} className="btn-outline text-xs py-2 px-3.5 text-amber-300 border-amber-500/40" title="Push a listening/pronunciation audio file to students">
-            <Music className="w-4 h-4 text-amber-400" /><span>{isArabic ? 'مادة الاستماع' : isUrdu ? 'پریکٹس آڈیو' : 'Practice Media'}</span>
+        {user.role !== 'STUDENT' && onOpenSubmissions && (
+          <button onClick={onOpenSubmissions} className={`btn-outline text-xs py-2 px-3.5 relative ${pendingSubmissions > 0 ? 'text-cyan-200 border-cyan-400/70 shadow-[0_0_14px_rgba(34,211,238,0.35)]' : 'text-cyan-300 border-cyan-500/40'}`}
+            title="Student voice recordings to listen to and grade">
+            <Inbox className="w-4 h-4 text-cyan-400" /><span>{t(language, 'submissions')}</span>
+            {pendingSubmissions > 0 && <span className="ml-1 px-1.5 bg-cyan-400 text-black text-[10px] font-bold rounded-full animate-pulse">{pendingSubmissions}</span>}
+          </button>
+        )}
+
+        {user.role !== 'STUDENT' && onOpenMedia && (
+          <button onClick={onOpenMedia} className="btn-outline text-xs py-2 px-3.5 text-amber-300 border-amber-500/40" title="Upload, record and share audio/video with students">
+            <Library className="w-4 h-4 text-amber-400" /><span>{t(language, 'mediaLibrary')}</span>
           </button>
         )}
 

@@ -31,7 +31,7 @@ COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 COPY --from=builder /app/downloads ./downloads
 
 # Create directories for audio/video recordings, downloads, and database
-RUN mkdir -p uploads/recordings prisma downloads
+RUN mkdir -p uploads/recordings uploads/media uploads/student prisma downloads
 
 ENV PORT=5000
 ENV DATABASE_URL="file:/app/prisma/dev.db"

@@ -283,27 +283,14 @@ export function setupSocketServer(io: SocketIOServer) {
       io.to('students').emit('broadcast:ended', { professorSocketId: socket.id });
     });
 
-    // ---- Shared practice media (professor pushes a file students control) ----
-    socket.on('media:push', (data: { targets: 'ALL' | number[]; url: string; name: string; mode: 'student' | 'synced' }) => {
+    // ---- Teacher-led playback of shared media (sharing itself is REST: /api/media-shares) ----
+    socket.on('media:control', (data: {
+      targets: 'ALL' | number[]; mediaId: string; action: 'play' | 'pause' | 'seek' | 'stop'; time?: number;
+    }) => {
       if (auth.role !== 'PROFESSOR' && auth.role !== 'ADMIN') return;
-      const payload = { url: data.url, name: data.name, mode: data.mode, professorSocketId: socket.id };
-      if (data.targets === 'ALL') {
-        io.to('students').emit('media:push', payload);
-      } else {
-        data.targets.forEach((n) => io.to(`cabin-${n}`).emit('media:push', payload));
-      }
-    });
-
-    socket.on('media:control', (data: { targets: 'ALL' | number[]; action: 'play' | 'pause' | 'seek' | 'stop'; time?: number }) => {
-      if (auth.role !== 'PROFESSOR' && auth.role !== 'ADMIN') return;
-      const payload = { action: data.action, time: data.time };
+      const payload = { mediaId: data.mediaId, action: data.action, time: data.time };
       if (data.targets === 'ALL') io.to('students').emit('media:control', payload);
-      else data.targets.forEach((n) => io.to(`cabin-${n}`).emit('media:control', payload));
-    });
-
-    socket.on('media:clear', (data: { targets: 'ALL' | number[] }) => {
-      if (data.targets === 'ALL') io.to('students').emit('media:clear');
-      else data.targets.forEach((n) => io.to(`cabin-${n}`).emit('media:clear'));
+      else if (Array.isArray(data.targets)) data.targets.forEach((n) => io.to(`cabin-${Number(n)}`).emit('media:control', payload));
     });
 
     // ---- 1:1 Calls ----
